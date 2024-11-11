@@ -11,6 +11,8 @@ from lab2.utils import UTILS, undistort_from_saved_data
 class LAB2(Node):
     def __init__(self):
         self.calibrate_camera = True
+        self.find_markers = True
+
         super().__init__("lab_2")
         self.utils = UTILS(self)
         self.br = CvBridge()
@@ -21,6 +23,12 @@ class LAB2(Node):
             "/rae/stereo_back/image_raw",
         ]
         self.frames = [None] * len(self.cameras)
+
+        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+        arucoParams = cv2.aruco.DetectorParameters()
+        self.marker_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
+        self.markers = [None] * len(self.cameras)
+
         for topic in self.cameras:
             self.create_subscription(
                 Image,
@@ -41,11 +49,18 @@ class LAB2(Node):
         idx = self.cameras.index(topic_name)
         # Undistort image using found calibration
         if self.calibrate_camera:
-            self.frames[idx] = undistort_from_saved_data(
+            current_frame = undistort_from_saved_data(
                 "./src/lab2/lab2/calibration_data.npz", current_frame
             )
-        else:
-            self.frames[idx] = current_frame
+
+        self.frames[idx] = current_frame
+
+        if "stereo" not in topic_name:
+            (corners, ids, rejected) = self.marker_detector.detectMarkers(current_frame)
+
+            cv2.aruco.drawDetectedMarkers(current_frame, corners, ids)
+        cv2.imshow(topic_name, current_frame)
+        cv2.waitKey(1)
 
     def stop(self, signum=None, frame=None):
         self.utils.set_leds("#ce10e3")
