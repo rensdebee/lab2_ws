@@ -1,8 +1,9 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import Image
 from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge
+import cv2
 
 from lab2.utils import UTILS, undistort_from_saved_data
 
@@ -10,27 +11,41 @@ from lab2.utils import UTILS, undistort_from_saved_data
 class LAB2(Node):
     def __init__(self):
         self.calibrate_camera = True
-
+        super().__init__("lab_2")
         self.utils = UTILS(self)
         self.br = CvBridge()
-        self.image_subscriber = self.create_subscription(
-            CompressedImage, "/rae/right/image_raw/compressed", self.image_callback, 10
-        )
+        self.cameras = [
+            "/rae/right/image_raw",
+            "/rae/stereo_front/image_raw",
+            "/rae/left_back/image_raw",
+            "/rae/stereo_back/image_raw",
+        ]
+        self.frames = [None] * len(self.cameras)
+        for topic in self.cameras:
+            self.create_subscription(
+                Image,
+                topic,
+                lambda msg, topic_name=topic: self.image_callback(msg, topic_name),
+                10,
+            )
 
         self.move_publisher = self.create_publisher(
             Twist, "/cmd_vel", rclpy.qos.qos_profile_system_default
         )
         return
 
-    def image_callback(self, data):
+    def image_callback(self, data, topic_name):
         # Convert ROS Image message to OpenCV image
-        current_frame = self.br.compressed_imgmsg_to_cv2(data)
+        current_frame = self.br.imgmsg_to_cv2(data)
+
+        idx = self.cameras.index(topic_name)
         # Undistort image using found calibration
-        self.image = current_frame
         if self.calibrate_camera:
-            self.image = undistort_from_saved_data(
+            self.frames[idx] = undistort_from_saved_data(
                 "./src/lab2/lab2/calibration_data.npz", current_frame
             )
+        else:
+            self.frames[idx] = current_frame
 
     def stop(self, signum=None, frame=None):
         self.utils.set_leds("#ce10e3")
