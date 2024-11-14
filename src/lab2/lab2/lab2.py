@@ -26,20 +26,30 @@ class LAB2(Node):
         self.frames = [None] * len(self.cameras)
 
         self.calibration_npz = "./src/lab2/lab2/calibration_data.npz"
-        # self.calibration_npz = "src/lab2/lab2/5coeff_calibration_data.npz"
+        #   self.calibration_npz = "src/lab2/lab2/5coeff_calibration_data.npz"
 
         arucoParams = cv2.aruco.DetectorParameters()
         arucoParams.adaptiveThreshWinSizeMin = 3
         arucoParams.adaptiveThreshWinSizeMax = 5
         arucoParams.adaptiveThreshWinSizeStep = 1
-        arucoParams.minMarkerPerimeterRate = 0.005
-        arucoParams.minCornerDistanceRate = 0.005
-        arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-        arucoParams.cornerRefinementMinAccuracy = 0.001
-        arucoParams.cornerRefinementMaxIterations = 50
+        arucoParams.adaptiveThreshConstant = 1
+        arucoParams.minMarkerPerimeterRate = 0.00005
+        arucoParams.minCornerDistanceRate = 0.00005
+        # arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        # arucoParams.cornerRefinementMinAccuracy = 0.001
+        # arucoParams.cornerRefinementMaxIterations = 50
 
         self.location_dict = {
-            "h11": {8: [[320, 197], 27.5], 16: [[320, -120], 23.5]},
+            "h11": {
+                8: [[0, 171.4], 14.1],
+                19: [
+                    [
+                        89.5,
+                        171.4,
+                    ],
+                    14.1,
+                ],
+            },
             "h12": {},
             "seven": {},
         }
@@ -138,6 +148,7 @@ class LAB2(Node):
             "distance": math.sqrt(
                 t_vec[0][0] ** 2 + t_vec[2][0] ** 2
             ),  # pythagoras between Z coordinate and x
+            "distance_angle": (math.cos(r_vec[0][0]) * t_vec[2][0]),
         }
         if current_frame is not None:
             axis_length = 100
@@ -209,7 +220,10 @@ class LAB2(Node):
             x4 = x2 - h * (y1 - y0) / d
             y4 = y2 + h * (x1 - x0) / d
 
-            return (x3, y3, x4, y4)
+            if y4 > 300:
+                return x3, y3
+            else:
+                return x4, y4
 
     def locate(self, point_dict):
         point_list = []
@@ -217,12 +231,13 @@ class LAB2(Node):
             for id, point_info in points.items():
                 if id in self.location_dict[tag_family]:
                     point_location = self.location_dict[tag_family][id][0]
-                    distance = point_info["distance"]
+                    distance = point_info["distance_angle"]
+                    # print(id, point_info["distance"], point_info["distance_angle"])
                     point_list.append(point_location + [distance])
         if len(point_list) >= 2:
-            x3, y3, x4, y4 = self.bilateration(point_list[:2])
-            print(x3, y3, x4, y4)
-            return x4, y4
+            loc = self.bilateration(point_list[:2])
+            print(loc)
+            return loc
         return None
 
     def timer_callback(self):
