@@ -81,7 +81,7 @@ def undistort_img(camera_matrix, dist_coeffs, img):
     h, w = img.shape[:2]
 
     new_cam_mat, roi = cv2.getOptimalNewCameraMatrix(
-        camera_matrix, dist_coeffs, (w, h), 0, (w, h), centerPrincipalPoint=True
+        camera_matrix, dist_coeffs, (w, h), 1, (w, h), centerPrincipalPoint=True
     )
 
     undist_img = cv2.undistort(img, camera_matrix, dist_coeffs, None, new_cam_mat)
