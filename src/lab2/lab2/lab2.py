@@ -6,6 +6,7 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 from lab2.utils import UTILS, undistort_from_saved_data
+import apriltag
 
 
 class LAB2(Node):
@@ -25,6 +26,7 @@ class LAB2(Node):
         self.frames = [None] * len(self.cameras)
 
         self.calibration_npz = "./src/lab2/lab2/calibration_data.npz"
+        # self.calibration_npz = "src/lab2/lab2/5coeff_calibration_data.npz"
 
         arucoParams = cv2.aruco.DetectorParameters()
         arucoParams.adaptiveThreshWinSizeMin = 3
@@ -41,7 +43,7 @@ class LAB2(Node):
         self.h11_ids = [0, 19, 8, 29, 59, 99, 79, 69, 18, 9, 39, 49, 89]
         self.h11_marker_size = 100  # mm
 
-        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_7X7_50)
+        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_7X7_100)
         self.seven_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
         self.seven_ids = [37, 27, 7, 17]
         self.seven_marker_size = 100  # mm
@@ -81,19 +83,22 @@ class LAB2(Node):
         found_ids = {}
 
         (corners, ids, _) = self.h11_detector.detectMarkers(current_frame)
-        found_ids["h11"] = self.filter_points(
-            corners, ids, self.h11_marker_size, current_frame
-        )
+        if ids is not None:
+            found_ids["h11"] = self.filter_points(
+                corners, ids, self.h11_marker_size, current_frame
+            )
 
         (corners, ids, _) = self.seven_detector.detectMarkers(current_frame)
-        found_ids["seven"] = self.filter_points(
-            corners, ids, self.seven_marker_size, current_frame
-        )
+        if ids is not None:
+            found_ids["seven"] = self.filter_points(
+                corners, ids, self.seven_marker_size, current_frame
+            )
 
         (corners, ids, _) = self.h12_detector.detectMarkers(current_frame)
-        found_ids["h12"] = self.filter_points(
-            corners, ids, self.h12_marker_size, current_frame
-        )
+        if ids is not None:
+            found_ids["h12"] = self.filter_points(
+                corners, ids, self.h12_marker_size, current_frame
+            )
 
         return found_ids
 
@@ -102,8 +107,10 @@ class LAB2(Node):
         if ids is not None:
             for c, id in zip(corners, ids):
                 if id in self.h11_ids or self.no_id_filter:
-                    point_dict[id] = self.get_point_pose(c, marker_size, current_frame)
-                    if current_frame:
+                    point_dict[id[0]] = self.get_point_pose(
+                        c, marker_size, current_frame
+                    )
+                    if current_frame is not None:
                         cv2.aruco.drawDetectedMarkers(
                             current_frame, np.array([c]), np.array([id])
                         )
@@ -120,10 +127,31 @@ class LAB2(Node):
             "r_vec": r_vec,
             "distance": t_vec[2],  # Z coordinate
         }
-        if current_frame:
-            axis_length = 10
+        if current_frame is not None:
+            axis_length = 100
             cv2.drawFrameAxes(
                 current_frame, camera_matrix, dist_coeffs, r_vec, t_vec, axis_length
+            )
+
+            tvec_text = f"tvec: x={t_vec[0][0]:.2f}, y={t_vec[1][0]:.2f}, z={t_vec[2][0]:.2f} mm"
+
+            # Define the position for the text (top-left corner of the image)
+            print(corner)
+            text_position = tuple(corner[0][0].ravel().astype(int))
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.6
+            color = (0, 255, 0)  # Green color for the text
+            thickness = 2
+
+            # Put the text on the image
+            cv2.putText(
+                current_frame,
+                tvec_text,
+                text_position,
+                font,
+                font_scale,
+                color,
+                thickness,
             )
 
         return pose_dict
@@ -141,11 +169,17 @@ class LAB2(Node):
         )
         return object_points
 
+    def triangulate(self, point_dict):
+
+        return x, y
     def timer_callback(self):
         if type(self.frames[0]) != np.ndarray:
             return
         image = self.frames[0].copy()
-        (corners, ids, rejected) = self.detect_makers(image)
+        # Detect points
+        point_dict = self.detect_makers(image)
+        # Triangulate
+        x, y = self.triangulate(point_dict)
         cv2.imshow("image", image)
         cv2.waitKey(1)
 
