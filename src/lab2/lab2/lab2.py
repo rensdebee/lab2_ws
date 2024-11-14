@@ -24,26 +24,32 @@ class LAB2(Node):
         ]
         self.frames = [None] * len(self.cameras)
 
+        self.calibration_npz = "./src/lab2/lab2/calibration_data.npz"
+
         arucoParams = cv2.aruco.DetectorParameters()
         arucoParams.adaptiveThreshWinSizeMin = 3
         arucoParams.adaptiveThreshWinSizeMax = 5
         arucoParams.adaptiveThreshWinSizeStep = 1
         arucoParams.minMarkerPerimeterRate = 0.005
-        # arucoParams.maxMarkerPerimeterRate = 0.3
         arucoParams.minCornerDistanceRate = 0.005
         arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        arucoParams.cornerRefinementMinAccuracy = 0.001
+        arucoParams.cornerRefinementMaxIterations = 50
 
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
         self.h11_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
         self.h11_ids = [0, 19, 8, 29, 59, 99, 79, 69, 18, 9, 39, 49, 89]
+        self.h11_marker_size = 100  # mm
 
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_7X7_50)
         self.seven_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
         self.seven_ids = [37, 27, 7, 17]
+        self.seven_marker_size = 100  # mm
 
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_MIP_36h12)
         self.h12_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
         self.h12_ids = [47, 57, 67, 77]
+        self.h12_marker_size = 100  # mm
 
         self.markers = [None] * len(self.cameras)
 
@@ -72,32 +78,68 @@ class LAB2(Node):
 
     def detect_makers(self, current_frame):
 
-        (corners, ids, rejected) = self.h11_detector.detectMarkers(current_frame)
+        found_ids = {}
 
+        (corners, ids, _) = self.h11_detector.detectMarkers(current_frame)
+        found_ids["h11"] = self.filter_points(
+            corners, ids, self.h11_marker_size, current_frame
+        )
+
+        (corners, ids, _) = self.seven_detector.detectMarkers(current_frame)
+        found_ids["seven"] = self.filter_points(
+            corners, ids, self.seven_marker_size, current_frame
+        )
+
+        (corners, ids, _) = self.h12_detector.detectMarkers(current_frame)
+        found_ids["h12"] = self.filter_points(
+            corners, ids, self.h12_marker_size, current_frame
+        )
+
+        return found_ids
+
+    def filter_points(self, corners, ids, marker_size, current_frame=None):
+        point_dict = {}
         if ids is not None:
             for c, id in zip(corners, ids):
                 if id in self.h11_ids or self.no_id_filter:
-                    cv2.aruco.drawDetectedMarkers(
-                        current_frame, np.array([c]), np.array([id])
-                    )
+                    point_dict[id] = self.get_point_pose(c, marker_size, current_frame)
+                    if current_frame:
+                        cv2.aruco.drawDetectedMarkers(
+                            current_frame, np.array([c]), np.array([id])
+                        )
 
-        (corners, ids, rejected) = self.seven_detector.detectMarkers(current_frame)
-        if ids is not None:
-            for c, id in zip(corners, ids):
-                if id in self.seven_ids or self.no_id_filter:
-                    cv2.aruco.drawDetectedMarkers(
-                        current_frame, np.array([c]), np.array([id])
-                    )
+    def get_point_pose(self, corner, marker_size, current_frame=None):
+        marker = self.get_marker_points(marker_size)
+        data = np.load(self.calibration_npz)
+        camera_matrix = data["camera_matrix"]
+        dist_coeffs = data["dist_coeffs"][0]
+        success, r_vec, t_vec = cv2.solvePnP(marker, corner, camera_matrix, dist_coeffs)
+        pose_dict = {
+            "corners": corner,
+            "t_vec": t_vec,
+            "r_vec": r_vec,
+            "distance": t_vec[2],  # Z coordinate
+        }
+        if current_frame:
+            axis_length = 10
+            cv2.drawFrameAxes(
+                current_frame, camera_matrix, dist_coeffs, r_vec, t_vec, axis_length
+            )
 
-        (corners, ids, rejected) = self.h12_detector.detectMarkers(current_frame)
-        if ids is not None:
-            for c, id in zip(corners, ids):
-                if id in self.h12_ids or self.no_id_filter:
-                    cv2.aruco.drawDetectedMarkers(
-                        current_frame, np.array([c]), np.array([id])
-                    )
+        return pose_dict
 
-        return (corners, ids, rejected)
+    def get_marker_points(self, marker_size):
+        half_size = marker_size / 2
+        object_points = np.array(
+            [
+                [-half_size, -half_size, 0],
+                [half_size, -half_size, 0],
+                [half_size, half_size, 0],
+                [-half_size, half_size, 0],
+            ],
+            dtype=np.float32,
+        )
+        return object_points
 
     def timer_callback(self):
         if type(self.frames[0]) != np.ndarray:
