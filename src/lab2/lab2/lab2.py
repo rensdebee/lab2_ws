@@ -7,20 +7,21 @@ import cv2
 import numpy as np
 from lab2.utils import UTILS, undistort_from_saved_data
 import math
+from scipy.optimize import least_squares
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 
 class LAB2(Node):
     def __init__(self):
         self.find_markers = True
-        self.no_id_filter = False
 
         super().__init__("lab_2")
         self.utils = UTILS(self)
         self.br = CvBridge()
         self.cameras = [
             "/rae/right/image_raw",
+            "/rae/left_back/image_raw",
             # "/rae/stereo_front/image_raw",
-            # "/rae/left_back/image_raw",
             # "/rae/stereo_back/image_raw",
         ]
         self.frames = [None] * len(self.cameras)
@@ -30,44 +31,34 @@ class LAB2(Node):
 
         arucoParams = cv2.aruco.DetectorParameters()
         arucoParams.adaptiveThreshWinSizeMin = 3
-        arucoParams.adaptiveThreshWinSizeMax = 5
+        arucoParams.adaptiveThreshWinSizeMax = 4
         arucoParams.adaptiveThreshWinSizeStep = 1
-        arucoParams.adaptiveThreshConstant = 1
+        # arucoParams.adaptiveThreshConstant = 1 # This makes it hella slow
         arucoParams.minMarkerPerimeterRate = 0.00005
         arucoParams.minCornerDistanceRate = 0.00005
-        # arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-        # arucoParams.cornerRefinementMinAccuracy = 0.001
-        # arucoParams.cornerRefinementMaxIterations = 50
+        arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        arucoParams.cornerRefinementMinAccuracy = 0.001
+        arucoParams.cornerRefinementMaxIterations = 100
 
         self.location_dict = {
             "h11": {
                 8: [[0, 171.4], 14.1],
-                19: [
-                    [
-                        89.5,
-                        171.4,
-                    ],
-                    14.1,
-                ],
+                19: [[89.5, 171.4], 14.1],
+                28: [[45.5, 184.4], 14.1],
+                0: [[0, -10], 14.1],
             },
             "h12": {},
             "seven": {},
         }
 
-        # 3.2
-        # -1,2
-        # 1.97
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
         self.h11_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
-        self.h11_ids = [0, 19, 8, 29, 59, 99, 79, 69, 18, 9, 39, 49, 89, 16]
 
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_7X7_100)
         self.seven_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
-        self.seven_ids = [37, 27, 7, 17]
 
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_MIP_36h12)
         self.h12_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
-        self.h12_ids = [47, 57, 67, 77]
 
         self.markers = [None] * len(self.cameras)
 
@@ -76,7 +67,9 @@ class LAB2(Node):
                 Image,
                 topic,
                 lambda msg, topic_name=topic: self.image_callback(msg, topic_name),
-                10,
+                qos_profile=QoSProfile(
+                    depth=1, reliability=ReliabilityPolicy.BEST_EFFORT
+                ),
             )
 
         self.move_publisher = self.create_publisher(
@@ -96,47 +89,43 @@ class LAB2(Node):
 
     def detect_makers(self, current_frame):
 
-        found_ids = {}
+        point_list = []
 
         (corners, ids, _) = self.h11_detector.detectMarkers(current_frame)
         if ids is not None:
-            found_ids["h11"] = self.filter_points(corners, ids, "h11", current_frame)
-        else:
-            found_ids["h11"] = {}
+            point_list += self.filter_points(corners, ids, "h11", current_frame)
 
         (corners, ids, _) = self.seven_detector.detectMarkers(current_frame)
         if ids is not None:
-            found_ids["seven"] = self.filter_points(
-                corners, ids, "seven", current_frame
-            )
-        else:
-            found_ids["seven"] = {}
+            point_list += self.filter_points(corners, ids, "seven", current_frame)
 
         (corners, ids, _) = self.h12_detector.detectMarkers(current_frame)
         if ids is not None:
-            found_ids["h12"] = self.filter_points(corners, ids, "h12", current_frame)
-        else:
-            found_ids["h12"] = {}
+            point_list += self.filter_points(corners, ids, "h12", current_frame)
 
-        return found_ids
+        return point_list
 
     def filter_points(self, corners, ids, tag_family, current_frame=None):
-        point_dict = {}
+        point_list = []
         if ids is not None:
             for c, id in zip(corners, ids):
-                if id[0] in self.location_dict[tag_family] or self.no_id_filter:
-                    if not self.no_id_filter:
-                        point_dict[id[0]] = self.get_point_pose(
-                            c, self.location_dict[tag_family][id[0]][1], current_frame
+                if id[0] in self.location_dict[tag_family]:
+                    point_list.append(
+                        self.get_point_pose(
+                            c,
+                            id[0],
+                            tag_family,
+                            current_frame,
                         )
+                    )
                     if current_frame is not None:
                         cv2.aruco.drawDetectedMarkers(
                             current_frame, np.array([c]), np.array([id])
                         )
-        return point_dict
+        return point_list
 
-    def get_point_pose(self, corner, marker_size, current_frame=None):
-        marker = self.get_marker_points(marker_size)
+    def get_point_pose(self, corner, id, tag_family, current_frame=None):
+        marker = self.get_marker_points(self.location_dict[tag_family][id][1])
         data = np.load(self.calibration_npz)
         camera_matrix = data["camera_matrix"]
         dist_coeffs = data["dist_coeffs"][0]
@@ -178,7 +167,7 @@ class LAB2(Node):
                 thickness,
             )
 
-        return pose_dict
+        return self.location_dict[tag_family][id][0] + [pose_dict["distance"]]
 
     def get_marker_points(self, marker_size):
         half_size = marker_size / 2
@@ -198,6 +187,7 @@ class LAB2(Node):
         # circle 2: (x1, y1), radius r1
         x0, y0, r0 = points[0]
         x1, y1, r1 = points[1]
+
         d = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
 
         # non intersecting
@@ -221,35 +211,64 @@ class LAB2(Node):
             y4 = y2 + h * (x1 - x0) / d
 
             if y4 > 300:
-                return x3, y3
+                return [x3, y3]
             else:
-                return x4, y4
+                return [x4, y4]
 
-    def locate(self, point_dict):
-        point_list = []
-        for tag_family, points in point_dict.items():
-            for id, point_info in points.items():
-                if id in self.location_dict[tag_family]:
-                    point_location = self.location_dict[tag_family][id][0]
-                    distance = point_info["distance_angle"]
-                    # print(id, point_info["distance"], point_info["distance_angle"])
-                    point_list.append(point_location + [distance])
-        if len(point_list) >= 2:
+    def trilateration(self, points):
+        points = np.array(points)
+        # Known positions of markers (x, y coordinates)
+        markers = points[:, :2]  # Add as many markers as needed
+
+        # Measured distances to each marker
+        distances = points[:, 2]
+
+        # Function to calculate residuals
+        def residuals(position, markers, distances):
+            return np.linalg.norm(markers - position, axis=1) - distances
+
+        # Initial guess for the position
+        initial_guess = np.mean(markers, axis=0)
+
+        # Use least squares to minimize the residuals
+        result = least_squares(residuals, initial_guess, args=(markers, distances))
+
+        # Estimated position
+        loc = result.x
+
+        return loc
+
+    def locate(self, point_list):
+        if len(point_list) < 2:
+            loc = None
+        if len(point_list) == 2:
             loc = self.bilateration(point_list[:2])
+            print("Two points")
+        if len(point_list) > 2:
+            print("Three or more points")
+            loc = self.trilateration(point_list)
+        if loc is not None:
             print(loc)
-            return loc
-        return None
+        return loc
+
+    def procces_frame(self, frame_id):
+        if type(self.frames[frame_id]) != np.ndarray:
+            return []
+        image = self.frames[frame_id].copy()
+        # Detect points
+        point_list = self.detect_makers(image)
+
+        cv2.imshow(f"image_{frame_id}", image)
+        cv2.waitKey(1)
+
+        return point_list
 
     def timer_callback(self):
-        if type(self.frames[0]) != np.ndarray:
-            return
-        image = self.frames[0].copy()
-        # Detect points
-        point_dict = self.detect_makers(image)
+        point_list = []
+        for frame_id in [0, 1]:
+            point_list += self.procces_frame(frame_id)
         # Triangulate
-        loc = self.locate(point_dict)
-        cv2.imshow("image", image)
-        cv2.waitKey(1)
+        loc = self.locate(point_list)
 
     def stop(self, signum=None, frame=None):
         self.utils.set_leds("#ce10e3")

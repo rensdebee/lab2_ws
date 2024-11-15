@@ -20,6 +20,7 @@ setup(
     entry_points={
         "console_scripts": [
             "lab2 = lab2.lab2:main",
+            "lab2_mt = lab2.lab2_mt:main",
         ],
     },
 )
