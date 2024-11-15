@@ -9,6 +9,7 @@ from lab2.utils import UTILS, undistort_from_saved_data
 import math
 from scipy.optimize import least_squares
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from lab2.measure import location_dict
 
 
 class LAB2(Node):
@@ -40,16 +41,18 @@ class LAB2(Node):
         arucoParams.cornerRefinementMinAccuracy = 0.001
         arucoParams.cornerRefinementMaxIterations = 100
 
-        self.location_dict = {
-            "h11": {
-                8: [[0, 171.4], 14.1],
-                19: [[89.5, 171.4], 14.1],
-                28: [[45.5, 184.4], 14.1],
-                0: [[0, -10], 14.1],
-            },
-            "h12": {},
-            "seven": {},
-        }
+        # self.location_dict = {
+        #     "h11": {
+        #         # 8: [[0, 171.4], 14.1],
+        #         # 19: [[89.5, 171.4], 14.1],
+        #         # 28: [[45.5, 184.4], 14.1],
+        #         # 0: [[0, -10], 14.1],
+        #         # 56: [[0, -10], 14.1],
+        #     },
+        #     "h12": {},
+        #     "seven": {},
+        # }
+        self.location_dict = location_dict
 
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
         self.h11_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
@@ -252,11 +255,12 @@ class LAB2(Node):
         return loc
 
     def procces_frame(self, frame_id):
+        point_list = []
         if type(self.frames[frame_id]) != np.ndarray:
-            return []
+            return point_list
         image = self.frames[frame_id].copy()
         # Detect points
-        point_list = self.detect_makers(image)
+        point_list += self.detect_makers(image)
 
         cv2.imshow(f"image_{frame_id}", image)
         cv2.waitKey(1)

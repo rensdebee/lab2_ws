@@ -1,4 +1,4 @@
-self.location_dict = {
+location_dict = {
             "h11": {
                 # id, [[X, Z], width_label]
                 8: [[-504.2, 9], 27.5],    
@@ -31,4 +31,4 @@ self.location_dict = {
                 37: [[-504.2, -97.85], 19.5],
                 7: [[-45.6, 557.8], 19.5]
             },
-        }
+    }

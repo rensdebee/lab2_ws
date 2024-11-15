@@ -13,6 +13,7 @@ import threading
 from queue import Queue
 from lab2.detect_markers import process_frame
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from lab2.measure import location_dict
 
 
 class LAB2(Node):
@@ -38,16 +39,7 @@ class LAB2(Node):
         self.calibration_npz = "./src/lab2/lab2/calibration_data.npz"
         #   self.calibration_npz = "src/lab2/lab2/5coeff_calibration_data.npz"
 
-        self.location_dict = {
-            "h11": {
-                8: [[0, 171.4], 14.1],
-                19: [[89.5, 171.4], 14.1],
-                28: [[45.5, 184.4], 14.1],
-                0: [[0, -10], 14.1],
-            },
-            "h12": {},
-            "seven": {},
-        }
+        self.location_dict = location_dict
 
         for topic in self.cameras:
             self.create_subscription(
