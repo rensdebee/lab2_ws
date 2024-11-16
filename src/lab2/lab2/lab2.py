@@ -10,6 +10,8 @@ import math
 from scipy.optimize import least_squares
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from lab2.measure import location_dict
+import threading
+from queue import Queue
 
 
 class LAB2(Node):
@@ -18,6 +20,9 @@ class LAB2(Node):
 
         super().__init__("lab_2")
         self.utils = UTILS(self)
+        self.display_queue = Queue()
+        self.display_thread = threading.Thread(target=self.display_frames, daemon=True)
+        self.display_thread.start()
         self.br = CvBridge()
         self.cameras = [
             "/rae/right/image_raw",
@@ -27,7 +32,10 @@ class LAB2(Node):
         ]
         self.frames = [None] * len(self.cameras)
 
-        self.calibration_npz = "./src/lab2/lab2/calibration_data.npz"
+        self.calibration_npzs = [
+            "./src/lab2/lab2/calibration_data.npz",
+            "./src/lab2/lab2/calibration_data_back.npz",
+        ]
         #   self.calibration_npz = "src/lab2/lab2/5coeff_calibration_data.npz"
 
         arucoParams = cv2.aruco.DetectorParameters()
@@ -75,14 +83,6 @@ class LAB2(Node):
                 ),
             )
 
-        self.move_publisher = self.create_publisher(
-            Twist, "/cmd_vel", rclpy.qos.qos_profile_system_default
-        )
-
-        self.timer = self.create_timer(
-            timer_period_sec=0.06, callback=self.timer_callback
-        )
-
     def image_callback(self, data, topic_name):
         # Convert ROS Image message to OpenCV image
         current_frame = self.br.imgmsg_to_cv2(data)
@@ -90,25 +90,39 @@ class LAB2(Node):
         idx = self.cameras.index(topic_name)
         self.frames[idx] = current_frame
 
-    def detect_makers(self, current_frame):
+    def display_frames(self):
+        """Thread to handle displaying frames."""
+        while True:
+            try:
+                frame_id, frame = self.display_queue.get()
+                if frame is None:
+                    break  # Exit the thread
+                cv2.imshow(f"Frame {frame_id}", frame)
+                cv2.waitKey(1)
+            except Exception as e:
+                self.get_logger().error(f"Error in display thread: {e}")
+
+    def detect_makers(self, cam_id, current_frame):
 
         point_list = []
 
         (corners, ids, _) = self.h11_detector.detectMarkers(current_frame)
         if ids is not None:
-            point_list += self.filter_points(corners, ids, "h11", current_frame)
+            point_list += self.filter_points(corners, ids, "h11", cam_id, current_frame)
 
         (corners, ids, _) = self.seven_detector.detectMarkers(current_frame)
         if ids is not None:
-            point_list += self.filter_points(corners, ids, "seven", current_frame)
+            point_list += self.filter_points(
+                corners, ids, "seven", cam_id, current_frame
+            )
 
         (corners, ids, _) = self.h12_detector.detectMarkers(current_frame)
         if ids is not None:
-            point_list += self.filter_points(corners, ids, "h12", current_frame)
+            point_list += self.filter_points(corners, ids, "h12", cam_id, current_frame)
 
         return point_list
 
-    def filter_points(self, corners, ids, tag_family, current_frame=None):
+    def filter_points(self, corners, ids, tag_family, cam_id=0, current_frame=None):
         point_list = []
         if ids is not None:
             for c, id in zip(corners, ids):
@@ -127,9 +141,9 @@ class LAB2(Node):
                         )
         return point_list
 
-    def get_point_pose(self, corner, id, tag_family, current_frame=None):
+    def get_point_pose(self, corner, id, tag_family, cam_id=0, current_frame=None):
         marker = self.get_marker_points(self.location_dict[tag_family][id][1])
-        data = np.load(self.calibration_npz)
+        data = np.load(self.calibration_npzs[cam_id])
         camera_matrix = data["camera_matrix"]
         dist_coeffs = data["dist_coeffs"][0]
         success, r_vec, t_vec = cv2.solvePnP(marker, corner, camera_matrix, dist_coeffs)
@@ -213,10 +227,7 @@ class LAB2(Node):
             x4 = x2 - h * (y1 - y0) / d
             y4 = y2 + h * (x1 - x0) / d
 
-            if y4 > 300:
-                return [x3, y3]
-            else:
-                return [x4, y4]
+            return [x3, y3, x4, y4]
 
     def trilateration(self, points):
         points = np.array(points)
@@ -254,23 +265,22 @@ class LAB2(Node):
             print(loc)
         return loc
 
-    def procces_frame(self, frame_id):
+    def procces_frame(self, cam_id):
         point_list = []
-        if type(self.frames[frame_id]) != np.ndarray:
+        if type(self.frames[cam_id]) != np.ndarray:
             return point_list
-        image = self.frames[frame_id].copy()
+        image = self.frames[cam_id].copy()
         # Detect points
-        point_list += self.detect_makers(image)
+        point_list += self.detect_makers(image, cam_id)
 
-        cv2.imshow(f"image_{frame_id}", image)
-        cv2.waitKey(1)
+        self.display_queue.put((cam_id, image))
 
         return point_list
 
     def timer_callback(self):
         point_list = []
-        for frame_id in [0, 1]:
-            point_list += self.procces_frame(frame_id)
+        for cam_id in [0, 1]:
+            point_list += self.procces_frame(cam_id)
         # Triangulate
         loc = self.locate(point_list)
 
