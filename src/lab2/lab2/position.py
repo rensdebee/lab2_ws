@@ -10,6 +10,8 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import numpy as np
 import cv2
+import threading
+from queue import Queue
 
 
 class AccumulateOdometry(Node):
@@ -17,29 +19,34 @@ class AccumulateOdometry(Node):
         super().__init__("accumulate_odometry")
 
         self.should_move = True
-
-        self.roi_polygon = np.array(
-            [[(120, 380), (120, 275), (640 - 120, 275), (640 - 120, 380)]],
-            dtype=np.int32,
-        )
-        self.min_clearance = 12  # Minimum allowed pixels for obstacles in the ROI
-        self.obstacle_detected = False
-
         self.print_pos = False
         self.publish_path = True
+
+        self.roi_polygon = np.array(
+            [[(0, 380), (0, 275), (640, 275), (640, 380)]],
+            dtype=np.int32,
+        )
+        self.min_clearance = 17  # Minimum allowed pixels for obstacles in the ROI
+        self.front_obstacle_detected = False
+        self.back_obstacle_detected = False
 
         self.x = 0
         self.y = 0
         self.theta = 0
 
-        self.target_x = 0.5
+        self.target_x = 0.75
         self.target_y = 0
         self.error_radius = 0.05
 
         # Control gains
         self.linear_gain = 1.0  # Gain for linear velocity
-        self.angular_gain = 5.0  # Gain for angular velocity
-        self.max_speed = 0.1
+        self.angular_gain = 1.0  # Gain for angular velocity
+        self.max_speed = 0.075
+        self.max_angular = 1.5
+
+        self.display_queue = Queue()
+        self.display_thread = threading.Thread(target=self.display_frames, daemon=True)
+        self.display_thread.start()
 
         self.move_publisher = self.create_publisher(
             Twist, "/cmd_vel", rclpy.qos.qos_profile_system_default
@@ -54,13 +61,17 @@ class AccumulateOdometry(Node):
         )
         # /odometry/filtered
         # /diff_controller/odom
+        cameras = ["/rae/stereo_front/image_raw", "/rae/stereo_back/image_raw"]
 
-        self.create_subscription(
-            Image,
-            "/rae/stereo_front/image_raw",
-            self.depth_callback,
-            qos_profile=QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
-        )
+        for topic in cameras:
+            self.create_subscription(
+                Image,
+                topic,
+                lambda msg, topic_name=topic: self.depth_callback(msg, topic_name),
+                qos_profile=QoSProfile(
+                    depth=1, reliability=ReliabilityPolicy.BEST_EFFORT
+                ),
+            )
         self.bridge = CvBridge()
 
         if self.publish_path:
@@ -72,10 +83,19 @@ class AccumulateOdometry(Node):
 
         self.get_logger().info("Accumulated Odometry Node Initialized")
 
+    def display_frames(self):
+        """Thread to handle displaying frames."""
+        while True:
+            try:
+                frame_id, frame = self.display_queue.get()
+                if frame is None:
+                    break  # Exit the thread
+                cv2.imshow(f"Frame {frame_id}", frame)
+                cv2.waitKey(1)
+            except Exception as e:
+                self.get_logger().error(f"Error in display thread: {e}")
+
     def timer_callback(self):
-        if self.obstacle_detected:
-            self.avoid_obstacle()
-            return
         # Compute the distance and angle to the target
         delta_x = self.target_x - self.x
         delta_y = self.target_y - self.y
@@ -89,23 +109,39 @@ class AccumulateOdometry(Node):
             exit()
             return
 
-        # Compute control signals
-        linear_velocity = self.linear_gain * distance_to_target
-        angular_velocity = self.angular_gain * self.angle_difference(
-            target_angle, self.theta
-        )
+        # Compute the angle difference
+        angle_diff = self.angle_difference(target_angle, self.theta)
+
+        # Determine whether to drive forward or backward
+        if abs(angle_diff) > math.pi / 2:  # Target is behind the robot
+            # Adjust angle for driving backward
+            angle_diff = self.angle_difference(target_angle, self.theta + math.pi)
+            linear_velocity = -self.linear_gain * distance_to_target  # Move backward
+            if self.back_obstacle_detected:
+                self.avoid_obstacle(back=True)
+                return
+        else:
+            linear_velocity = self.linear_gain * distance_to_target  # Move forward
+            if self.front_obstacle_detected:
+                self.avoid_obstacle(front=True)
+                return
+
+        # Compute angular velocity
+        angular_velocity = self.angular_gain * angle_diff
 
         # Create and publish the Twist message
         twist = Twist()
-        twist.linear.x = min(
-            linear_velocity, self.max_speed
+        twist.linear.x = max(
+            -1 * self.max_speed, min(linear_velocity, self.max_speed)
         )  # Limit max linear velocity
-        twist.angular.z = angular_velocity
-        print(twist.linear.x, twist.angular.z)
+        twist.angular.z = max(
+            -1 * self.max_angular, min(angular_velocity, self.max_angular)
+        )
+        # print(twist.linear.x, twist.angular.z)
         if self.should_move:
             self.move_publisher.publish(twist)
 
-    def depth_callback(self, msg):
+    def depth_callback(self, msg, topic_name):
         """Process the depth camera image and display it."""
         try:
             # Convert ROS Image to OpenCV format
@@ -116,7 +152,13 @@ class AccumulateOdometry(Node):
             cv2.fillPoly(mask, self.roi_polygon, 255)
             # Apply the mask to the depth image
             roi = cv2.bitwise_and(cv_image, mask)
-            self.obstacle_detected = np.mean(roi) < self.min_clearance
+
+            object_detected = np.mean(roi) < self.min_clearance
+            if "back" in topic_name:
+                print(np.mean(roi))
+                self.back_obstacle_detected = object_detected
+            if "front" in topic_name:
+                self.front_obstacle_detected = object_detected
 
             # Draw the ROI polygon on the depth image
             cv_image = cv_image
@@ -127,24 +169,30 @@ class AccumulateOdometry(Node):
                 image_with_roi,
                 self.roi_polygon,
                 isClosed=True,
-                color=(255, 0, 0),
+                color=(0, 0, 255) if object_detected else (255, 0, 0),
                 thickness=2,
             )
 
             # Display the depth image with ROI
-            cv2.imshow("Depth Image with ROI", image_with_roi)
-            cv2.waitKey(1)  # Required to update the display
+            self.display_queue.put((topic_name, image_with_roi))
 
         except Exception as e:
             self.get_logger().error(f"Depth image processing failed: {e}")
 
-    def avoid_obstacle(self):
+    def avoid_obstacle(self, front=False, back=False):
         """Avoid the obstacle by moving forward and turning."""
-        self.get_logger().warn("Obstacle detected! Avoiding...")
+        self.get_logger().warn(
+            "Obstacle detected! Avoiding..." + "front" if front else "back"
+        )
 
         twist = Twist()
-        twist.linear.x = 0.05  # Move forward slowly
-        twist.angular.z = 1.0  # Turn slightly
+        twist.linear.x = 0.1  # Move forward slowly
+        if back == True:
+            twist.linear.x = -1 * twist.linear.x
+
+        twist.angular.z = 2.5  # Turn slightly
+        if front:
+            twist.angular.z = -1 * twist.angular.z
 
         if self.should_move:
             self.move_publisher.publish(twist)
