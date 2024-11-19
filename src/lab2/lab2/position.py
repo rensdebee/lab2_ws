@@ -2,11 +2,12 @@ import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
+from robot_localization.srv import SetPose
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Point
 import math
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, Imu
 from cv_bridge import CvBridge
 import numpy as np
 import cv2
@@ -19,34 +20,44 @@ class AccumulateOdometry(Node):
         super().__init__("accumulate_odometry")
 
         self.should_move = True
-        self.print_pos = False
+        self.print_pos = True
+        self.print_heading = False
         self.publish_path = True
+
+        self.start_x = 0
+        self.start_y = 0
+        self.start_yaw = math.radians(0)
+
+        self.target_x = 0
+        self.target_y = 1
+        self.error_radius = 0.05
+
+        self.angular_gain = 3
+        self.linear_gain = 1
+        self.max_angular = 2.0
+        self.max_speed = 0.1
+
+        self.detect_obstacles = False   
 
         self.roi_polygon = np.array(
             [[(0, 380), (0, 275), (640, 275), (640, 380)]],
             dtype=np.int32,
         )
-        self.min_clearance = 17  # Minimum allowed pixels for obstacles in the ROI
+        self.min_clearance = 25  # Minimum allowed pixels for obstacles in the ROI
         self.front_obstacle_detected = False
         self.back_obstacle_detected = False
-
-        self.x = 0
-        self.y = 0
-        self.theta = 0
-
-        self.target_x = 0.75
-        self.target_y = 0
-        self.error_radius = 0.05
-
-        # Control gains
-        self.linear_gain = 1.0  # Gain for linear velocity
-        self.angular_gain = 1.0  # Gain for angular velocity
-        self.max_speed = 0.075
-        self.max_angular = 1.5
 
         self.display_queue = Queue()
         self.display_thread = threading.Thread(target=self.display_frames, daemon=True)
         self.display_thread.start()
+
+        self.client = self.create_client(SetPose, "/set_pose")
+
+        # Ensure the service is available before proceeding
+        while not self.client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info("Service not available, waiting again...")
+
+        self.reset_position()
 
         self.move_publisher = self.create_publisher(
             Twist, "/cmd_vel", rclpy.qos.qos_profile_system_default
@@ -59,9 +70,14 @@ class AccumulateOdometry(Node):
         self.odom_subscriber = self.create_subscription(
             Odometry, "/diff_controller/odom", self.odometry_callback, 10
         )
+        self.x = self.start_x
+        self.y = self.start_y
+        self.pos_init = False
+        self.target_angle = 0
         # /odometry/filtered
-        # /diff_controller/odom
-        cameras = ["/rae/stereo_front/image_raw", "/rae/stereo_back/image_raw"]
+        # /diff_controller/odom # Negtive X
+        cameras = ["/rae/stereo_front/image_raw"]
+        # "/rae/stereo_back/image_raw"
 
         for topic in cameras:
             self.create_subscription(
@@ -74,12 +90,17 @@ class AccumulateOdometry(Node):
             )
         self.bridge = CvBridge()
 
+        self.create_subscription(Point, "/marker_loc", self.marker_callback, 10)
+
+        self.create_subscription(Imu, "/rae/imu/data", self.imu_callback, 10)
+        self.imu_offset_initialized = False
+        self.yaw = self.start_yaw
+
         if self.publish_path:
             self.path_publisher = self.create_publisher(Path, "/accumulated_path", 50)
 
         self.path = Path()
         self.path.header.frame_id = "odom"
-        self.first_pose_initialized = False  # Flag to track first pose initialization
 
         self.get_logger().info("Accumulated Odometry Node Initialized")
 
@@ -100,7 +121,6 @@ class AccumulateOdometry(Node):
         delta_x = self.target_x - self.x
         delta_y = self.target_y - self.y
         distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
-        target_angle = math.atan2(delta_y, delta_x)
 
         # Stop the robot if within the error radius
         if distance_to_target < self.error_radius:
@@ -109,35 +129,30 @@ class AccumulateOdometry(Node):
             exit()
             return
 
+        if self.front_obstacle_detected and self.detect_obstacles:
+            self.avoid_obstacle()
+            return
+
         # Compute the angle difference
-        angle_diff = self.angle_difference(target_angle, self.theta)
+        target_angle = math.atan2(delta_x, delta_y) % (2 * math.pi)
+        angle_diff = target_angle - self.yaw
+        angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
+        self.target_angle = target_angle
 
-        # Determine whether to drive forward or backward
-        if abs(angle_diff) > math.pi / 2:  # Target is behind the robot
-            # Adjust angle for driving backward
-            angle_diff = self.angle_difference(target_angle, self.theta + math.pi)
-            linear_velocity = -self.linear_gain * distance_to_target  # Move backward
-            if self.back_obstacle_detected:
-                self.avoid_obstacle(back=True)
-                return
-        else:
-            linear_velocity = self.linear_gain * distance_to_target  # Move forward
-            if self.front_obstacle_detected:
-                self.avoid_obstacle(front=True)
-                return
-
-        # Compute angular velocity
-        angular_velocity = self.angular_gain * angle_diff
+        angular_velocity = -1 * self.angular_gain * angle_diff
+        linear_velocity = self.linear_gain * distance_to_target
 
         # Create and publish the Twist message
         twist = Twist()
-        twist.linear.x = max(
-            -1 * self.max_speed, min(linear_velocity, self.max_speed)
-        )  # Limit max linear velocity
+        twist.linear.x = min(linear_velocity, self.max_speed)
         twist.angular.z = max(
             -1 * self.max_angular, min(angular_velocity, self.max_angular)
         )
-        # print(twist.linear.x, twist.angular.z)
+
+        if twist.angular.z < 0:
+            print("Going right")
+        elif twist.angular.z > 0:
+            print("Going left")
         if self.should_move:
             self.move_publisher.publish(twist)
 
@@ -155,7 +170,7 @@ class AccumulateOdometry(Node):
 
             object_detected = np.mean(roi) < self.min_clearance
             if "back" in topic_name:
-                print(np.mean(roi))
+                # print(np.mean(roi))
                 self.back_obstacle_detected = object_detected
             if "front" in topic_name:
                 self.front_obstacle_detected = object_detected
@@ -179,20 +194,17 @@ class AccumulateOdometry(Node):
         except Exception as e:
             self.get_logger().error(f"Depth image processing failed: {e}")
 
-    def avoid_obstacle(self, front=False, back=False):
+    def avoid_obstacle(self):
         """Avoid the obstacle by moving forward and turning."""
-        self.get_logger().warn(
-            "Obstacle detected! Avoiding..." + "front" if front else "back"
-        )
+
+        if not self.detect_obstacles:
+            return
+        self.get_logger().warn("Obstacle detected! Avoiding...")
 
         twist = Twist()
         twist.linear.x = 0.1  # Move forward slowly
-        if back == True:
-            twist.linear.x = -1 * twist.linear.x
-
         twist.angular.z = 2.5  # Turn slightly
-        if front:
-            twist.angular.z = -1 * twist.angular.z
+        twist.angular.z = -1 * twist.angular.z
 
         if self.should_move:
             self.move_publisher.publish(twist)
@@ -213,78 +225,110 @@ class AccumulateOdometry(Node):
             diff += 2 * math.pi
         return diff
 
+    def normalize_angle(self, angle):
+        return angle % (2 * math.pi)
+
     def distance(self, x1, y1, x2, y2):
         return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+
+    def marker_callback(self, msg):
+        print("marker")
+        exit()
+        x = msg.x
+        y = msg.y
+
+        self.x_offset = self.x - x
+        self.y_offset = self.y - y
+
+    def imu_callback(self, msg):
+        # Extract quaternion from IMU data
+        qx = msg.orientation.x
+        qy = msg.orientation.y
+        qz = msg.orientation.z
+        qw = msg.orientation.w
+
+        # Convert quaternion to yaw (heading)
+        _, _, yaw = euler_from_quaternion([qx, qy, qz, qw])
+        yaw = -1 * yaw
+        if not self.imu_offset_initialized:
+            self.yaw_offset = yaw + self.start_yaw
+            self.imu_offset_initialized = True
+
+        self.yaw = self.normalize_angle(yaw - self.yaw_offset)
+
+        if self.print_heading:
+            self.get_logger().info(f"Heading: {math.degrees(self.yaw):.2f} degrees")
 
     def odometry_callback(self, msg):
         # Extract pose from odometry message
         position = msg.pose.pose.position
-        orientation = msg.pose.pose.orientation
+        rotation = msg.pose.pose.orientation
 
-        if not self.first_pose_initialized:
-            # Initialize the first pose
-            self.x_offset = position.x
-            self.y_offset = position.y
-            # Convert quaternion to Euler angles to get yaw (theta)
-            _, _, self.theta_offset = euler_from_quaternion(
-                [
-                    orientation.x,
-                    orientation.y,
-                    orientation.z,
-                    orientation.w,
-                ]
-            )
-
-            initial_pose = PoseStamped()
-            initial_pose.header = msg.header
-            initial_pose.header.frame_id = "odom"
-            initial_pose.pose.position.x = 0.0
-            initial_pose.pose.position.y = 0.0
-            initial_pose.pose.position.z = 0.0
-            initial_pose.pose.orientation.x = orientation.x
-            initial_pose.pose.orientation.y = orientation.y
-            initial_pose.pose.orientation.z = orientation.z
-            initial_pose.pose.orientation.w = orientation.w
-
-            self.path.poses.append(initial_pose)
-            self.first_pose_initialized = True
-            self.get_logger().info("Initialized first pose at (0, 0, 0)")
-            return
-
-        # Update the path
-        new_pose = PoseStamped()
-        new_pose.header = msg.header
-        new_pose.header.frame_id = "odom"
-        new_pose.pose.position.x = position.x - self.x_offset
-        new_pose.pose.position.y = position.y - self.y_offset
-        new_pose.pose.position.z = 0.0
-
-        new_pose.pose.orientation.x = orientation.x
-        new_pose.pose.orientation.y = orientation.y
-        new_pose.pose.orientation.z = orientation.z
-        new_pose.pose.orientation.w = orientation.w
-
-        self.path.poses.append(new_pose)
-        if self.publish_path:
-            self.path_publisher.publish(self.path)
-
-        # Convert quaternion to Euler angles to get yaw (theta)
-        _, _, theta = euler_from_quaternion(
-            [
-                new_pose.pose.orientation.x,
-                new_pose.pose.orientation.y,
-                new_pose.pose.orientation.z,
-                new_pose.pose.orientation.w,
-            ]
+        _, _, yaw = euler_from_quaternion(
+            [rotation.x, rotation.y, rotation.z, rotation.w]
         )
-        self.theta = theta - self.theta_offset
-        self.x = new_pose.pose.position.x
-        self.y = new_pose.pose.position.y
+        if self.pos_init:
+            self.correct_position(position.x, position.y)
+        self.pos_init = True
+        self.prev_x = position.x
+        self.prev_y = position.y
 
         if self.print_pos:
             self.get_logger().info(
-                f"Accumulated Position -> x: {self.x:.2f}, y: {self.y:.2f}, theta: {self.theta:.2f}"
+                f"Accumulated Position -> x: {self.x:.2f}, y: {self.y:.2f}, Heading: {math.degrees(self.yaw):.2f}, Target Heading: {math.degrees(self.target_angle):.2f}",
             )
+
+        if self.publish_path:
+            # Update the path
+            new_pose = PoseStamped()
+            new_pose.header = msg.header
+            new_pose.header.frame_id = "odom"
+            new_pose.pose.position.x = float(self.x)
+            new_pose.pose.position.y = float(self.y)
+            new_pose.pose.position.z = 0.0
+            self.path.poses.append(new_pose)
+            self.path_publisher.publish(self.path)
+
+    def correct_position(self, x, y):
+        length = np.sqrt((x - self.prev_x) ** 2 + (y - self.prev_y) ** 2)
+
+        self.x += length * math.sin(self.yaw)
+        self.y += length * math.cos(self.yaw)
+
+    def reset_position(self):
+        # Create a request to reset the pose
+        self.request = SetPose.Request()
+
+        # Initialize the pose message
+        self.request.pose.header.stamp.sec = 0
+        self.request.pose.header.stamp.nanosec = 0
+        self.request.pose.header.frame_id = (
+            "odom"  # Make sure to use the correct frame ID
+        )
+
+        # Corrected access to position (pose.pose.position)
+        self.request.pose.pose.pose.position.x = float(self.start_x)
+        self.request.pose.pose.pose.position.y = float(self.start_y)
+        self.request.pose.pose.pose.position.z = 0.0
+
+        qx, qy, qz, qw = quaternion_from_euler(0, 0, 0)
+        self.request.pose.pose.pose.orientation.x = qx
+        self.request.pose.pose.pose.orientation.y = qy
+        self.request.pose.pose.pose.orientation.z = qz
+        self.request.pose.pose.pose.orientation.w = qw
+
+        # Set the covariance to zero (can be adjusted if needed)
+        self.request.pose.pose.covariance = [
+            0.0
+        ] * 36  # 6x6 covariance matrix, all zeros
+
+        # Call the service with the prepared request
+        future = self.client.call_async(self.request)
+        rclpy.spin_until_future_complete(self, future)
+        if future.result() is not None:
+            self.get_logger().info("Pose reset successful")
+        else:
+            self.get_logger().error("Failed to reset pose")
 
 
 def main(args=None):
