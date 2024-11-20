@@ -19,6 +19,10 @@ pip install ffmpeg
 sudo apt install libsndfile1-dev
 
 ```
+### robot_localization
+```
+sudo apt install ros-humble-robot-localization
+```
 ### LAB 2 Package
 Make sure you are in the lAb2_WS folder
 ```

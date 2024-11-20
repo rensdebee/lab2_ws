@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Point
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -17,6 +17,7 @@ from queue import Queue
 class LAB2(Node):
     def __init__(self):
         self.find_markers = True
+        self.check_in_field = False
 
         super().__init__("lab_2")
         self.utils = UTILS(self)
@@ -39,15 +40,15 @@ class LAB2(Node):
         #   self.calibration_npz = "src/lab2/lab2/5coeff_calibration_data.npz"
 
         arucoParams = cv2.aruco.DetectorParameters()
-        arucoParams.adaptiveThreshWinSizeMin = 3
-        arucoParams.adaptiveThreshWinSizeMax = 4
-        arucoParams.adaptiveThreshWinSizeStep = 1
-        # arucoParams.adaptiveThreshConstant = 1 # This makes it hella slow
-        arucoParams.minMarkerPerimeterRate = 0.00005
-        arucoParams.minCornerDistanceRate = 0.00005
-        arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-        arucoParams.cornerRefinementMinAccuracy = 0.001
-        arucoParams.cornerRefinementMaxIterations = 100
+        # arucoParams.adaptiveThreshWinSizeMin = 3
+        # arucoParams.adaptiveThreshWinSizeMax = 4
+        # arucoParams.adaptiveThreshWinSizeStep = 1
+        # # arucoParams.adaptiveThreshConstant = 1 # This makes it hella slow
+        # arucoParams.minMarkerPerimeterRate = 0.00005
+        # arucoParams.minCornerDistanceRate = 0.00005
+        # arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        # arucoParams.cornerRefinementMinAccuracy = 0.001
+        # arucoParams.cornerRefinementMaxIterations = 100
 
         # self.location_dict = {
         #     "h11": {
@@ -71,8 +72,6 @@ class LAB2(Node):
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_MIP_36h12)
         self.h12_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
 
-        self.markers = [None] * len(self.cameras)
-
         for topic in self.cameras:
             self.create_subscription(
                 Image,
@@ -83,12 +82,20 @@ class LAB2(Node):
                 ),
             )
 
+        self.timer = self.create_timer(
+            timer_period_sec=0.06, callback=self.timer_callback
+        )
+
+        self.publisher_ = self.create_publisher(Point, "/marker_loc", 10)
+
     def image_callback(self, data, topic_name):
         # Convert ROS Image message to OpenCV image
         current_frame = self.br.imgmsg_to_cv2(data)
 
         idx = self.cameras.index(topic_name)
         self.frames[idx] = current_frame
+
+        # self.display_queue.put((idx, current_frame))
 
     def display_frames(self):
         """Thread to handle displaying frames."""
@@ -132,9 +139,10 @@ class LAB2(Node):
                             c,
                             id[0],
                             tag_family,
+                            cam_id,
                             current_frame,
                         )
-                    )
+                    )   
                     if current_frame is not None:
                         cv2.aruco.drawDetectedMarkers(
                             current_frame, np.array([c]), np.array([id])
@@ -263,7 +271,25 @@ class LAB2(Node):
             loc = self.trilateration(point_list)
         if loc is not None:
             print(loc)
+
+        if self.check_field(loc):
+            msg = Point()
+            msg.x = loc[0]  # Replace with your x value
+            msg.y = loc[1]  # Replace with your y value
+            msg.z = 0.0
+            self.publisher_.publish(msg)
+
         return loc
+
+    def check_field(self, loc):
+        if loc is None:
+            return False
+        if self.check_in_field == False:
+            return True
+        x = loc[0]
+        y = loc[1]
+        return True
+        # TODO Check if x,y in field here
 
     def procces_frame(self, cam_id):
         point_list = []
@@ -271,7 +297,7 @@ class LAB2(Node):
             return point_list
         image = self.frames[cam_id].copy()
         # Detect points
-        point_list += self.detect_makers(image, cam_id)
+        point_list += self.detect_makers(cam_id, image)
 
         self.display_queue.put((cam_id, image))
 
