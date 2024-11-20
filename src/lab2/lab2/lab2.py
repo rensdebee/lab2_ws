@@ -1,9 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import Twist, Point
-from visualization_msgs.msg import Marker
-
+from geometry_msgs.msg import Twist, PointStamped
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -19,7 +17,7 @@ from queue import Queue
 class LAB2(Node):
     def __init__(self):
         self.find_markers = True
-        self.check_in_field = False
+        self.check_in_field = True
 
         super().__init__("lab_2")
         self.utils = UTILS(self)
@@ -80,18 +78,7 @@ class LAB2(Node):
             timer_period_sec=0.06, callback=self.timer_callback
         )
 
-        self.publisher_ = self.create_publisher(Marker, "/marker_loc", 10)
-        self.marker = Marker()
-        self.marker.header.frame_id = "odom"
-        self.marker.ns = "points"
-        self.marker.type = Marker.POINTS
-        self.marker.action = Marker.ADD
-        self.marker.scale.x = 0.1  # Size of the point
-        self.marker.scale.y = 0.1
-        self.marker.color.r = 1.0
-        self.marker.color.g = 0.0
-        self.marker.color.b = 0.0
-        self.marker.color.a = 1.0  # Alpha (transparency)
+        self.publisher_ = self.create_publisher(PointStamped, "/marker_loc", 10)
 
     def image_callback(self, data, topic_name):
         # Convert ROS Image message to OpenCV image
@@ -100,7 +87,7 @@ class LAB2(Node):
         idx = self.cameras.index(topic_name)
         self.frames[idx] = current_frame
 
-        # self.display_queue.put((idx, current_frame))
+        self.display_queue.put((f"{idx}_raw", current_frame))
 
     def display_frames(self):
         """Thread to handle displaying frames."""
@@ -174,6 +161,7 @@ class LAB2(Node):
         dist_coeffs = data["dist_coeffs"][0]
 
         # Rescale the corners
+        old_corner = corner
         corner = corner / self.scale_factor
 
         success, r_vec, t_vec = cv2.solvePnP(marker, corner, camera_matrix, dist_coeffs)
@@ -187,17 +175,17 @@ class LAB2(Node):
             "distance_angle": (math.cos(r_vec[0][0]) * t_vec[2][0]),
         }
         if current_frame is not None:
-            axis_length = 100
-            cv2.drawFrameAxes(
-                current_frame, camera_matrix, dist_coeffs, r_vec, t_vec, axis_length
-            )
+            # axis_length = 100
+            # cv2.drawFrameAxes(
+            #     current_frame, camera_matrix, dist_coeffs, r_vec, t_vec, axis_length
+            # )
 
             tvec_text = (
                 f"x:{t_vec[0][0]:.2f} , y:{t_vec[1][0]:.2f} z:{t_vec[2][0]:.2f} cm"
             )
 
             # Define the position for the text (top-left corner of the image)
-            text_position = tuple(corner[0][0].ravel().astype(int))
+            text_position = tuple(old_corner[0][0].ravel().astype(int))
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.6
             color = (0, 255, 0)  # Green color for the text
@@ -288,22 +276,23 @@ class LAB2(Node):
         if len(point_list) == 2:
             loc = self.bilateration(point_list[:2])
             print("Two points")
+            # print("distance", np.array(point_list)[:, 2])
         if len(point_list) > 2:
             print("Three or more points")
+            # print("distance", np.array(point_list))
             loc = self.trilateration(point_list)
 
-        loc = self.check_field(loc)
         if loc is not None:
-            print(loc)
-            point = Point()
-            point.x = loc[0]
-            point.y = loc[1]
-            point.z = 0.0
-            self.marker.points.append(point)
-            self.marker.header.stamp = self.get_clock().now().to_msg()
-            self.publisher_.publish(self.marker)
-
-        return loc
+            # print(f"Unfiltered loc: {loc}")
+            loc = self.check_field(loc)
+            print(f"Filtered loc: {loc}")
+            if loc is not None:
+                msg = PointStamped()
+                msg.header.frame_id = "odom"
+                msg.point.x = loc[0] / 100  # cm to meters
+                msg.point.y = loc[1] / 100  # cm to meters
+                msg.point.z = 0.0
+                self.publisher_.publish(msg)
 
     def check_field(self, loc):
         if loc is None:
@@ -329,10 +318,10 @@ class LAB2(Node):
 
     def timer_callback(self):
         point_list = []
-        for cam_id in [0]:
+        for cam_id in [0, 1]:
             point_list += self.procces_frame(cam_id)
         # Triangulate
-        loc = self.locate(point_list)
+        self.locate(point_list)
 
     def stop(self, signum=None, frame=None):
         self.utils.set_leds("#ce10e3")
@@ -362,6 +351,3 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
-
-
-

@@ -4,8 +4,7 @@ from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
 from robot_localization.srv import SetPose
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
-from geometry_msgs.msg import Twist
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Twist, PointStamped
 import math
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image, Imu
@@ -29,16 +28,35 @@ class AccumulateOdometry(Node):
         self.start_y = 0
         self.start_yaw = math.radians(0)
 
-        self.target_x = 0
-        self.target_y = 3.3
-        self.error_radius = 0.05
+        self.error_radius = 0.2
+
+        # # First right
+        # self.target_x = 2
+        # self.target_y = 2.805
+
+        # # First left
+        # self.target_x = -2
+        # self.target_y = 2.805
+
+        # Second right
+        # self.target_x = 1.15
+        # self.target_y = 3.9
+
+        # # Second left
+        self.target_x = -1.15
+        self.target_y = 3.9
+
+        # # Middle
+        # self.target_x = 0
+        # self.target_y = 3.2
+        # self.error_radius = 0.05
 
         self.angular_gain = 3
         self.linear_gain = 1
         self.max_angular = 2.0
         self.max_speed = 0.1
 
-        self.detect_obstacles = True
+        self.detect_obstacles = False
 
         self.roi_polygon = np.array(
             [[(0, 380), (0, 275), (640, 275), (640, 380)]],
@@ -91,7 +109,7 @@ class AccumulateOdometry(Node):
             )
         self.bridge = CvBridge()
 
-        self.create_subscription(Marker, "/marker_loc", self.marker_callback, 10)
+        self.create_subscription(PointStamped, "/marker_loc", self.marker_callback, 10)
 
         self.create_subscription(Imu, "/rae/imu/data", self.imu_callback, 10)
         self.imu_offset_initialized = False
@@ -150,10 +168,10 @@ class AccumulateOdometry(Node):
             -1 * self.max_angular, min(angular_velocity, self.max_angular)
         )
 
-        if twist.angular.z < 0:
-            print("Going right")
-        elif twist.angular.z > 0:
-            print("Going left")
+        # if twist.angular.z < 0:
+        #     print("Going right")
+        # elif twist.angular.z > 0:
+        #     print("Going left")
         if self.should_move:
             self.move_publisher.publish(twist)
 
@@ -233,13 +251,22 @@ class AccumulateOdometry(Node):
         return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
 
     def marker_callback(self, msg):
-        print("marker")
-        exit()
-        x = msg.x
-        y = msg.y
+        x = msg.point.x
+        y = msg.point.y
+        if np.sqrt((x - self.x) ** 2 + (y - self.y) ** 2) < 1:
+            self.x = 0.2 * x + 0.8 * self.x
+            self.y = 0.2 * y + 0.8 * self.y
 
-        self.x_offset = self.x - x
-        self.y_offset = self.y - y
+            if self.publish_path:
+                # Update the path
+                new_pose = PoseStamped()
+                new_pose.header = msg.header
+                new_pose.header.frame_id = "odom"
+                new_pose.pose.position.x = float(self.x)
+                new_pose.pose.position.y = float(self.y)
+                new_pose.pose.position.z = 0.0
+                self.path.poses.append(new_pose)
+                self.path_publisher.publish(self.path)
 
     def imu_callback(self, msg):
         # Extract quaternion from IMU data
