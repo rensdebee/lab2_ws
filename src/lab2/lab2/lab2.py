@@ -40,27 +40,18 @@ class LAB2(Node):
         #   self.calibration_npz = "src/lab2/lab2/5coeff_calibration_data.npz"
 
         arucoParams = cv2.aruco.DetectorParameters()
-        # arucoParams.adaptiveThreshWinSizeMin = 3
-        # arucoParams.adaptiveThreshWinSizeMax = 4
-        # arucoParams.adaptiveThreshWinSizeStep = 1
-        # # arucoParams.adaptiveThreshConstant = 1 # This makes it hella slow
-        # arucoParams.minMarkerPerimeterRate = 0.00005
-        # arucoParams.minCornerDistanceRate = 0.00005
-        # arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-        # arucoParams.cornerRefinementMinAccuracy = 0.001
-        # arucoParams.cornerRefinementMaxIterations = 100
+        arucoParams.adaptiveThreshWinSizeMin = 3
+        arucoParams.adaptiveThreshWinSizeMax = 21
+        arucoParams.adaptiveThreshWinSizeStep = 3
+        arucoParams.polygonalApproxAccuracyRate = 0.04
+        arucoParams.minCornerDistanceRate = 0.001
+        arucoParams.perspectiveRemovePixelPerCell = 8
+        arucoParams.perspectiveRemoveIgnoredMarginPerCell = 0.3
 
-        # self.location_dict = {
-        #     "h11": {
-        #         # 8: [[0, 171.4], 14.1],
-        #         # 19: [[89.5, 171.4], 14.1],
-        #         # 28: [[45.5, 184.4], 14.1],
-        #         # 0: [[0, -10], 14.1],
-        #         # 56: [[0, -10], 14.1],
-        #     },
-        #     "h12": {},
-        #     "seven": {},
-        # }
+        arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        arucoParams.cornerRefinementMinAccuracy = 0.001
+        arucoParams.cornerRefinementMaxIterations = 100
+
         self.location_dict = location_dict
 
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
@@ -110,8 +101,16 @@ class LAB2(Node):
                 self.get_logger().error(f"Error in display thread: {e}")
 
     def detect_makers(self, cam_id, current_frame):
-
         point_list = []
+
+        # Resize and sharpen the image
+        scale_factor = 2
+        current_frame = cv2.resize(current_frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
+        # Sharpen the image
+        kernel = np.array([[0, -1, 0],
+                [-1, 5, -1],
+                [0, -1, 0]])
+        current_frame = cv2.filter2D(current_frame, -1, kernel)
 
         (corners, ids, _) = self.h11_detector.detectMarkers(current_frame)
         if ids is not None:
