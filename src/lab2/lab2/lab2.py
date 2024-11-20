@@ -87,7 +87,7 @@ class LAB2(Node):
         idx = self.cameras.index(topic_name)
         self.frames[idx] = current_frame
 
-        self.display_queue.put((f"{idx}_raw", current_frame))
+        # self.display_queue.put((f"{idx}_raw", current_frame))
 
     def display_frames(self):
         """Thread to handle displaying frames."""

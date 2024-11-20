@@ -31,19 +31,19 @@ class AccumulateOdometry(Node):
         self.start_y = 0
         self.start_yaw = math.radians(0)
 
-        self.error_radius = 0.4
+        self.error_radius = 0.3
 
         # # First right
-        # self.target_x = 2
-        # self.target_y = 2.805
+        self.target_x = 2
+        self.target_y = 2.805
 
         # # First left
         # self.target_x = -2
         # self.target_y = 2.805
 
         # Second right
-        self.target_x = 1.15
-        self.target_y = 3.9
+        # self.target_x = 1.15
+        # self.target_y = 3.9
 
         # # Second left
         # self.target_x = -1.15
@@ -273,18 +273,24 @@ class AccumulateOdometry(Node):
             else:
                 self.localization_list.append(np.asarray([x, y]))
 
-                measurements = np.array(self.localization_list)
+                if len(self.localization_list) < 7:
+                    measurements = np.array(self.localization_list)
+                else:
+                    measurements = np.array(self.localization_list[-7:])
 
-                transition_matrices = [[1, 1], 
-                            [0, 1]]
+                transition_matrices = [[1, 1], [0, 1]]
                 # transition_matrices = np.identity(len(measurements))
-                observation_matrices = [[1, 0], 
-                                        [0, 1]]
-                kf = KalmanFilter(transition_matrices = transition_matrices, observation_matrices = observation_matrices)
+                observation_matrices = [[1, 0], [0, 1]]
+                kf = KalmanFilter(
+                    transition_matrices=transition_matrices,
+                    observation_matrices=observation_matrices,
+                )
 
                 kf = kf.em(measurements)
                 (_, _) = kf.filter(measurements)
-                (smoothed_state_means, smoothed_state_covariances) = kf.smooth(measurements)
+                (smoothed_state_means, smoothed_state_covariances) = kf.smooth(
+                    measurements
+                )
 
                 x, y = smoothed_state_means[-1]
 
