@@ -1,7 +1,9 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import Twist, Point, PointStamped
+from geometry_msgs.msg import Twist, Point
+from visualization_msgs.msg import Marker
+
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -42,7 +44,7 @@ class LAB2(Node):
         arucoParams = cv2.aruco.DetectorParameters()
         arucoParams.adaptiveThreshWinSizeMin = 3
         arucoParams.adaptiveThreshWinSizeMax = 21
-        arucoParams.adaptiveThreshWinSizeStep = 3
+        arucoParams.adaptiveThreshWinSizeStep = 5
         arucoParams.polygonalApproxAccuracyRate = 0.04
         arucoParams.minCornerDistanceRate = 0.001
         arucoParams.perspectiveRemovePixelPerCell = 8
@@ -77,7 +79,18 @@ class LAB2(Node):
             timer_period_sec=0.06, callback=self.timer_callback
         )
 
-        self.publisher_ = self.create_publisher(Point, "/marker_loc", 10)
+        self.publisher_ = self.create_publisher(Marker, "/marker_loc", 10)
+        self.marker = Marker()
+        self.marker.header.frame_id = "odom"
+        self.marker.ns = "points"
+        self.marker.type = Marker.POINTS
+        self.marker.action = Marker.ADD
+        self.marker.scale.x = 0.1  # Size of the point
+        self.marker.scale.y = 0.1
+        self.marker.color.r = 1.0
+        self.marker.color.g = 0.0
+        self.marker.color.b = 0.0
+        self.marker.color.a = 1.0  # Alpha (transparency)
 
     def image_callback(self, data, topic_name):
         # Convert ROS Image message to OpenCV image
@@ -105,11 +118,15 @@ class LAB2(Node):
 
         # Resize and sharpen the image
         scale_factor = 2
-        current_frame = cv2.resize(current_frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
+        current_frame = cv2.resize(
+            current_frame,
+            None,
+            fx=scale_factor,
+            fy=scale_factor,
+            interpolation=cv2.INTER_CUBIC,
+        )
         # Sharpen the image
-        kernel = np.array([[0, -1, 0],
-                [-1, 5, -1],
-                [0, -1, 0]])
+        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
         current_frame = cv2.filter2D(current_frame, -1, kernel)
 
         (corners, ids, _) = self.h11_detector.detectMarkers(current_frame)
@@ -126,6 +143,7 @@ class LAB2(Node):
         if ids is not None:
             point_list += self.filter_points(corners, ids, "h12", cam_id, current_frame)
 
+        self.display_queue.put((cam_id, current_frame))
         return point_list
 
     def filter_points(self, corners, ids, tag_family, cam_id=0, current_frame=None):
@@ -268,47 +286,45 @@ class LAB2(Node):
         if len(point_list) > 2:
             print("Three or more points")
             loc = self.trilateration(point_list)
+
+        loc = self.check_field(loc)
         if loc is not None:
             print(loc)
-
-        if self.check_field(loc):
-            msg = PointStamped()
-            msg.header.frame_id = "odom"
-            msg.x = loc[0] / 100  # Cm to Meters
-            msg.y = loc[1] / 100  # Cm to Meters
-            msg.z = 0.0
-            self.publisher_.publish(msg)
+            point = Point()
+            point.x = loc[0]
+            point.y = loc[1]
+            point.z = 0.0
+            self.marker.points.append(point)
+            self.marker.header.stamp = self.get_clock().now().to_msg()
+            self.publisher_.publish(self.marker)
 
         return loc
 
     def check_field(self, loc):
         if loc is None:
-            return False
+            return None
         if self.check_in_field == False:
-            return True
+            return loc[0]
         for xy in loc:
             x = xy[0]
             y = xy[1]
             if (-450 < x < 450) and (-300 < y < 300):
                 return [x, y]
-        return True
-        # TODO Check if x,y in field here
+        return None
 
     def procces_frame(self, cam_id):
         point_list = []
         if type(self.frames[cam_id]) != np.ndarray:
             return point_list
-        image = self.frames[cam_id].copy()
+        current_frame = self.frames[cam_id].copy()
         # Detect points
-        point_list += self.detect_makers(cam_id, image)
-
-        self.display_queue.put((cam_id, image))
+        point_list += self.detect_makers(cam_id, current_frame)
 
         return point_list
 
     def timer_callback(self):
         point_list = []
-        for cam_id in [0, 1]:
+        for cam_id in [0]:
             point_list += self.procces_frame(cam_id)
         # Triangulate
         loc = self.locate(point_list)

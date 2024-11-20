@@ -4,7 +4,8 @@ from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
 from robot_localization.srv import SetPose
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
-from geometry_msgs.msg import Twist, PointStamped
+from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Point
 import math
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image, Imu
@@ -28,8 +29,8 @@ class AccumulateOdometry(Node):
         self.start_y = 0
         self.start_yaw = math.radians(0)
 
-        self.target_x = -0.5
-        self.target_y = -1
+        self.target_x = 0
+        self.target_y = 3.3
         self.error_radius = 0.05
 
         self.angular_gain = 3
@@ -37,7 +38,7 @@ class AccumulateOdometry(Node):
         self.max_angular = 2.0
         self.max_speed = 0.1
 
-        self.detect_obstacles = False
+        self.detect_obstacles = True
 
         self.roi_polygon = np.array(
             [[(0, 380), (0, 275), (640, 275), (640, 380)]],
@@ -90,7 +91,7 @@ class AccumulateOdometry(Node):
             )
         self.bridge = CvBridge()
 
-        self.create_subscription(PointStamped, "/marker_loc", self.marker_callback, 10)
+        self.create_subscription(Marker, "/marker_loc", self.marker_callback, 10)
 
         self.create_subscription(Imu, "/rae/imu/data", self.imu_callback, 10)
         self.imu_offset_initialized = False
