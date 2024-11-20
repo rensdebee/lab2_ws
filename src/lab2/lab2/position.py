@@ -31,7 +31,7 @@ class AccumulateOdometry(Node):
         self.start_y = 0
         self.start_yaw = math.radians(0)
 
-        self.error_radius = 0.2
+        self.error_radius = 0.4
 
         # # First right
         # self.target_x = 2
@@ -42,12 +42,12 @@ class AccumulateOdometry(Node):
         # self.target_y = 2.805
 
         # Second right
-        # self.target_x = 1.15
-        # self.target_y = 3.9
+        self.target_x = 1.15
+        self.target_y = 3.9
 
         # # Second left
-        self.target_x = -1.15
-        self.target_y = 3.9
+        # self.target_x = -1.15
+        # self.target_y = 3.9
 
         # # Middle
         # self.target_x = 0
@@ -271,12 +271,13 @@ class AccumulateOdometry(Node):
 
             measurements = np.array(self.localization_list)
 
-            transition_matrices = [[1, 1], 
-                        [0, 1]]
+            transition_matrices = [[1, 1], [0, 1]]
             # transition_matrices = np.identity(len(measurements))
-            observation_matrices = [[1, 0], 
-                                    [0, 1]]
-            kf = KalmanFilter(transition_matrices = transition_matrices, observation_matrices = observation_matrices)
+            observation_matrices = [[1, 0], [0, 1]]
+            kf = KalmanFilter(
+                transition_matrices=transition_matrices,
+                observation_matrices=observation_matrices,
+            )
 
             kf = kf.em(measurements)
             (_, _) = kf.filter(measurements)
@@ -285,8 +286,8 @@ class AccumulateOdometry(Node):
             x, y = smoothed_state_means[-1]
 
         if np.sqrt((x - self.x) ** 2 + (y - self.y) ** 2) < 1:
-            self.x = 0.2 * x + 0.8 * self.x
-            self.y = 0.2 * y + 0.8 * self.y
+            self.x = 0.5 * x + 0.5 * self.x
+            self.y = 0.5 * y + 0.5 * self.y
 
             if self.publish_path:
                 # Update the path
