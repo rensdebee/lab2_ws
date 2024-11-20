@@ -267,23 +267,26 @@ class AccumulateOdometry(Node):
 
         if self.kalman_filter:
             ##apply kalman filter on the localization data
-            self.localization_list.append(np.asarray([x, y]))
+            if len(self.localization_list) == 0:
+                self.localization_list.append(np.asarray([x, y]))
+                x, y = x, y
+            else:
+                self.localization_list.append(np.asarray([x, y]))
 
-            measurements = np.array(self.localization_list)
+                measurements = np.array(self.localization_list)
 
-            transition_matrices = [[1, 1], [0, 1]]
-            # transition_matrices = np.identity(len(measurements))
-            observation_matrices = [[1, 0], [0, 1]]
-            kf = KalmanFilter(
-                transition_matrices=transition_matrices,
-                observation_matrices=observation_matrices,
-            )
+                transition_matrices = [[1, 1], 
+                            [0, 1]]
+                # transition_matrices = np.identity(len(measurements))
+                observation_matrices = [[1, 0], 
+                                        [0, 1]]
+                kf = KalmanFilter(transition_matrices = transition_matrices, observation_matrices = observation_matrices)
 
-            kf = kf.em(measurements)
-            (_, _) = kf.filter(measurements)
-            (smoothed_state_means, smoothed_state_covariances) = kf.smooth(measurements)
+                kf = kf.em(measurements)
+                (_, _) = kf.filter(measurements)
+                (smoothed_state_means, smoothed_state_covariances) = kf.smooth(measurements)
 
-            x, y = smoothed_state_means[-1]
+                x, y = smoothed_state_means[-1]
 
         if np.sqrt((x - self.x) ** 2 + (y - self.y) ** 2) < 1:
             self.x = 0.5 * x + 0.5 * self.x
