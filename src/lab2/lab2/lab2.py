@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import Twist, Point
+from geometry_msgs.msg import Twist, Point, PointStamped
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -142,7 +142,7 @@ class LAB2(Node):
                             cam_id,
                             current_frame,
                         )
-                    )   
+                    )
                     if current_frame is not None:
                         cv2.aruco.drawDetectedMarkers(
                             current_frame, np.array([c]), np.array([id])
@@ -215,7 +215,7 @@ class LAB2(Node):
 
         d = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
 
-        # non intersecting
+        # non intersecting[INFO] [1732098052.885673243] [accumulate_odometry]: Accumulated Position -> x: -0.48, y: -0.94
         if d > r0 + r1:
             return None
         # One circle within other
@@ -235,7 +235,7 @@ class LAB2(Node):
             x4 = x2 - h * (y1 - y0) / d
             y4 = y2 + h * (x1 - x0) / d
 
-            return [x3, y3, x4, y4]
+            return [[x3, y3], [x4, y4]]
 
     def trilateration(self, points):
         points = np.array(points)
@@ -258,7 +258,7 @@ class LAB2(Node):
         # Estimated position
         loc = result.x
 
-        return loc
+        return [loc]
 
     def locate(self, point_list):
         if len(point_list) < 2:
@@ -273,9 +273,10 @@ class LAB2(Node):
             print(loc)
 
         if self.check_field(loc):
-            msg = Point()
-            msg.x = loc[0]  # Replace with your x value
-            msg.y = loc[1]  # Replace with your y value
+            msg = PointStamped()
+            msg.header.frame_id = "odom"
+            msg.x = loc[0] / 100  # Cm to Meters
+            msg.y = loc[1] / 100  # Cm to Meters
             msg.z = 0.0
             self.publisher_.publish(msg)
 
@@ -286,8 +287,11 @@ class LAB2(Node):
             return False
         if self.check_in_field == False:
             return True
-        x = loc[0]
-        y = loc[1]
+        for xy in loc:
+            x = xy[0]
+            y = xy[1]
+            if (-450 < x < 450) and (-300 < y < 300):
+                return [x, y]
         return True
         # TODO Check if x,y in field here
 
