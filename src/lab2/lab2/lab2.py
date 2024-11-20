@@ -32,6 +32,7 @@ class LAB2(Node):
             # "/rae/stereo_back/image_raw",
         ]
         self.frames = [None] * len(self.cameras)
+        self.scale_factor = 2
 
         self.calibration_npzs = [
             "./src/lab2/lab2/calibration_data.npz",
@@ -104,8 +105,7 @@ class LAB2(Node):
         point_list = []
 
         # Resize and sharpen the image
-        scale_factor = 2
-        current_frame = cv2.resize(current_frame, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
+        current_frame = cv2.resize(current_frame, None, fx=self.scale_factor, fy=self.scale_factor, interpolation=cv2.INTER_CUBIC)
         # Sharpen the image
         kernel = np.array([[0, -1, 0],
                 [-1, 5, -1],
@@ -153,6 +153,10 @@ class LAB2(Node):
         data = np.load(self.calibration_npzs[cam_id])
         camera_matrix = data["camera_matrix"]
         dist_coeffs = data["dist_coeffs"][0]
+
+        # Rescale the corners
+        corner = corner / self.scale_factor
+
         success, r_vec, t_vec = cv2.solvePnP(marker, corner, camera_matrix, dist_coeffs)
         pose_dict = {
             "corners": corner,
@@ -341,3 +345,6 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
+
+
+
