@@ -13,6 +13,9 @@ import numpy as np
 import cv2
 import threading
 from queue import Queue
+from pykalman import KalmanFilter
+import numpy as np
+from numpy import ma
 
 
 class AccumulateOdometry(Node):
@@ -57,6 +60,9 @@ class AccumulateOdometry(Node):
         self.max_speed = 0.1
 
         self.detect_obstacles = False
+
+        self.localization_list = []
+        self.kalman_filter = True
 
         self.roi_polygon = np.array(
             [[(0, 380), (0, 275), (640, 275), (640, 380)]],
@@ -251,8 +257,33 @@ class AccumulateOdometry(Node):
         return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
 
     def marker_callback(self, msg):
+        """
+        x and y are location from localization
+        self.x and self.y are the location from odometry
+
+        """
         x = msg.point.x
         y = msg.point.y
+
+        if self.kalman_filter:
+            ##apply kalman filter on the localization data
+            self.localization_list.append(np.asarray([x, y]))
+
+            measurements = np.array(self.localization_list)
+
+            transition_matrices = [[1, 1], 
+                        [0, 1]]
+            # transition_matrices = np.identity(len(measurements))
+            observation_matrices = [[1, 0], 
+                                    [0, 1]]
+            kf = KalmanFilter(transition_matrices = transition_matrices, observation_matrices = observation_matrices)
+
+            kf = kf.em(measurements)
+            (_, _) = kf.filter(measurements)
+            (smoothed_state_means, smoothed_state_covariances) = kf.smooth(measurements)
+
+            x, y = smoothed_state_means[-1]
+
         if np.sqrt((x - self.x) ** 2 + (y - self.y) ** 2) < 1:
             self.x = 0.2 * x + 0.8 * self.x
             self.y = 0.2 * y + 0.8 * self.y
