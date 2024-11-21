@@ -24,9 +24,9 @@ class AccumulateOdometry(Node):
 
         self.should_move = True
         self.use_markers = True
-        self.detect_obstacles = True
+        self.detect_obstacles = False
 
-        self.print_pos = True   
+        self.print_pos = True
         self.print_heading = False
         self.publish_path = True
         self.kalman_filter = True
@@ -44,7 +44,7 @@ class AccumulateOdometry(Node):
 
         self.error_radius = 0
         self.targets = []
-        self.targets.append([0, 3.2, 0.3])
+        self.targets.append([0, 3.2, 0.25])
         # self.targets.append([1.15, 3.9, 0.2])
 
         # # First right
@@ -60,7 +60,7 @@ class AccumulateOdometry(Node):
         # self.targets.append([-1.15, 3.9, 0.2])
 
         # # Middle
-        # self.targets.append([0, 3.2, 0.3])
+        # self.targets.append([0, 3.2, 0.25])
 
         self.target_x = self.targets[0][0]
         self.target_y = self.targets[0][1]
