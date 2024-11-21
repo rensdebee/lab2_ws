@@ -75,7 +75,7 @@ class LAB2(Node):
             )
 
         self.timer = self.create_timer(
-            timer_period_sec=0.06, callback=self.timer_callback
+            timer_period_sec=0.1, callback=self.timer_callback
         )
 
         self.publisher_ = self.create_publisher(PointStamped, "/marker_loc", 10)
@@ -275,11 +275,16 @@ class LAB2(Node):
             loc = None
         if len(point_list) == 2:
             loc = self.bilateration(point_list[:2])
-            print("Two points")
-            # print("distance", np.array(point_list)[:, 2])
+            if loc is None:
+                print("Two points LS")
+                loc = self.trilateration(point_list)
+            else:
+                print("Two points", loc)
+
+            print("distance", np.array(point_list)[:, 2])
         if len(point_list) > 2:
             print("Three or more points")
-            # print("distance", np.array(point_list))
+            print("distance", np.array(point_list))
             loc = self.trilateration(point_list)
 
         if loc is not None:
@@ -302,7 +307,7 @@ class LAB2(Node):
         for xy in loc:
             x = xy[0]
             y = xy[1]
-            if (-450 < x < 450) and (-300 < y < 300):
+            if (-450 < y < 450) and (-300 < x < 300):
                 return [x, y]
         return None
 
@@ -318,7 +323,7 @@ class LAB2(Node):
 
     def timer_callback(self):
         point_list = []
-        for cam_id in [0, 1]:
+        for cam_id in [0]:
             point_list += self.procces_frame(cam_id)
         # Triangulate
         self.locate(point_list)

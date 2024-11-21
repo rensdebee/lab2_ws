@@ -15,7 +15,7 @@ import threading
 from queue import Queue
 from pykalman import KalmanFilter
 import numpy as np
-from numpy import ma
+from lab2.utils import UTILS
 
 
 class AccumulateOdometry(Node):
@@ -23,66 +23,71 @@ class AccumulateOdometry(Node):
         super().__init__("accumulate_odometry")
 
         self.should_move = True
-        self.print_pos = True
+        self.use_markers = True
+        self.detect_obstacles = True
+
+        self.print_pos = True   
         self.print_heading = False
         self.publish_path = True
+        self.kalman_filter = True
+        self.obj_ticks = 10
+        self.min_clearance = 12
+
+        self.angular_gain = 2.5
+        self.linear_gain = 1  # 1
+        self.max_angular = 2.0  # 2.0
+        self.max_speed = 0.1  # 0.1
 
         self.start_x = 0
-        self.start_y = 0
+        self.start_y = 0.05
         self.start_yaw = math.radians(0)
 
-        self.error_radius = 0.3
+        self.error_radius = 0
+        self.targets = []
+        self.targets.append([0, 3.2, 0.3])
+        # self.targets.append([1.15, 3.9, 0.2])
 
         # # First right
-        self.target_x = 2
-        self.target_y = 2.805
+        # self.targets.append([2, 2.805, 0.2])
 
         # # First left
-        # self.target_x = -2
-        # self.target_y = 2.805
+        # self.targets.append([-2, 2.805, 0.2])
 
         # Second right
-        # self.target_x = 1.15
-        # self.target_y = 3.9
+        # self.targets.append([1.15, 3.9, 0.2])
 
         # # Second left
-        # self.target_x = -1.15
-        # self.target_y = 3.9
+        # self.targets.append([-1.15, 3.9, 0.2])
 
         # # Middle
-        # self.target_x = 0
-        # self.target_y = 3.2
-        # self.error_radius = 0.05
+        # self.targets.append([0, 3.2, 0.3])
 
-        self.angular_gain = 3
-        self.linear_gain = 1
-        self.max_angular = 2.0
-        self.max_speed = 0.1
-
-        self.detect_obstacles = False
+        self.target_x = self.targets[0][0]
+        self.target_y = self.targets[0][1]
+        self.error_radius = self.targets[0][2]
 
         self.localization_list = []
-        self.kalman_filter = True
 
-        self.roi_polygon = np.array(
-            [[(0, 380), (0, 275), (640, 275), (640, 380)]],
+        self.roi_left = np.array(
+            [[(0, 335), (350, 335), (350, 400), (0, 400)]],
             dtype=np.int32,
         )
-        self.min_clearance = 25  # Minimum allowed pixels for obstacles in the ROI
-        self.front_obstacle_detected = False
-        self.back_obstacle_detected = False
+        self.roi_right = np.array(
+            [[(350, 335), (640, 335), (640, 400), (350, 400)]],
+            dtype=np.int32,
+        )
+        self.roi_middle = np.array(
+            [[(150, 335), (450, 335), (450, 400), (150, 400)]],
+            dtype=np.int32,
+        )
+        self.left_detected = 0
+        self.right_detected = 0
 
         self.display_queue = Queue()
         self.display_thread = threading.Thread(target=self.display_frames, daemon=True)
         self.display_thread.start()
-
-        self.client = self.create_client(SetPose, "/set_pose")
-
-        # Ensure the service is available before proceeding
-        while not self.client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info("Service not available, waiting again...")
-
-        self.reset_position()
+        self.distance_to_target = 0
+        self.utils = UTILS(self)
 
         self.move_publisher = self.create_publisher(
             Twist, "/cmd_vel", rclpy.qos.qos_profile_system_default
@@ -127,6 +132,8 @@ class AccumulateOdometry(Node):
         self.path = Path()
         self.path.header.frame_id = "odom"
 
+        self.utils.set_leds("#FF00FF")
+
         self.get_logger().info("Accumulated Odometry Node Initialized")
 
     def display_frames(self):
@@ -146,17 +153,33 @@ class AccumulateOdometry(Node):
         delta_x = self.target_x - self.x
         delta_y = self.target_y - self.y
         distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
-
+        self.distance_to_target = distance_to_target
         # Stop the robot if within the error radius
         if distance_to_target < self.error_radius:
-            self.stop_robot()
+            self.utils.set_leds("#FFFF00")
             self.get_logger().info("Target reached!")
-            exit()
-            return
+            self.targets.pop(0)
+            if len(self.targets) == 0:
+                self.stop_robot()
+                self.utils.set_leds("#00FF00")
+                exit()
+                return
+            self.target_x = self.targets[0][0]
+            self.target_y = self.targets[0][1]
+            self.error_radius = self.targets[0][2]
 
-        if self.front_obstacle_detected and self.detect_obstacles:
+        # Compute the distance and angle to the target
+        delta_x = self.target_x - self.x
+        delta_y = self.target_y - self.y
+        distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
+        self.distance_to_target = distance_to_target
+
+        if (
+            self.left_detected > 0 or self.right_detected > 0
+        ) and self.detect_obstacles:
             self.avoid_obstacle()
             return
+        self.utils.set_leds("#FF00FF")
 
         # Compute the angle difference
         target_angle = math.atan2(delta_x, delta_y) % (2 * math.pi)
@@ -170,9 +193,11 @@ class AccumulateOdometry(Node):
         # Create and publish the Twist message
         twist = Twist()
         twist.linear.x = min(linear_velocity, self.max_speed)
-        twist.angular.z = max(
-            -1 * self.max_angular, min(angular_velocity, self.max_angular)
-        )
+        if self.distance_to_target > 2.5:
+            max_angular = 0.75
+        else:
+            max_angular = self.max_angular
+        twist.angular.z = max(-1 * max_angular, min(angular_velocity, max_angular))
 
         # if twist.angular.z < 0:
         #     print("Going right")
@@ -187,30 +212,71 @@ class AccumulateOdometry(Node):
             # Convert ROS Image to OpenCV format
             cv_image = self.bridge.imgmsg_to_cv2(msg)
 
-            # Create a mask for the ROI
             mask = np.zeros_like(cv_image)
-            cv2.fillPoly(mask, self.roi_polygon, 255)
-            # Apply the mask to the depth image
-            roi = cv2.bitwise_and(cv_image, mask)
+            cv2.fillPoly(mask, self.roi_left, 255)
+            left_roi = cv2.bitwise_and(cv_image, mask)
 
-            object_detected = np.mean(roi) < self.min_clearance
-            if "back" in topic_name:
-                # print(np.mean(roi))
-                self.back_obstacle_detected = object_detected
-            if "front" in topic_name:
-                self.front_obstacle_detected = object_detected
+            mask = np.zeros_like(cv_image)
+            cv2.fillPoly(mask, self.roi_right, 255)
+            right_roi = cv2.bitwise_and(cv_image, mask)
+
+            mask = np.zeros_like(cv_image)
+            cv2.fillPoly(mask, self.roi_middle, 255)
+            middle_roi = cv2.bitwise_and(cv_image, mask)
+
+            if "front" in topic_name and (
+                np.mean(left_roi) < 5.25 or np.mean(middle_roi) < 5.25
+            ):
+                self.left_detected = self.obj_ticks
+            if "front" in topic_name and np.mean(right_roi) < 3.75:
+                self.right_detected = self.obj_ticks
 
             # Draw the ROI polygon on the depth image
+            object_detected = False
             cv_image = cv_image
             cv_image = (cv_image / cv_image.max()) * 255
             cv_image = cv_image.astype(np.uint8)
             image_with_roi = cv2.cvtColor(cv_image, cv2.COLOR_GRAY2BGR)
             cv2.polylines(
                 image_with_roi,
-                self.roi_polygon,
+                self.roi_left,
                 isClosed=True,
-                color=(0, 0, 255) if object_detected else (255, 0, 0),
+                color=(0, 0, 255) if self.left_detected > 0 else (255, 0, 0),
                 thickness=2,
+            )
+            cv2.polylines(
+                image_with_roi,
+                self.roi_right,
+                isClosed=True,
+                color=(0, 0, 255) if self.right_detected > 0 else (255, 0, 0),
+                thickness=2,
+            )
+            cv2.polylines(
+                image_with_roi,
+                self.roi_middle,
+                isClosed=True,
+                color=(0, 0, 255) if np.mean(middle_roi) < 5 else (255, 0, 0),
+                thickness=2,
+            )
+            self.distance_to_target
+            text = f"Distance to target: {self.distance_to_target:.4f}m"
+
+            # Define the position for the text (top-left corner of the image)
+            text_position = (0, 40)
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.6
+            color = (0, 255, 0)  # Green color for the text
+            thickness = 2
+
+            # Put the text on the image
+            cv2.putText(
+                image_with_roi,
+                text,
+                text_position,
+                font,
+                font_scale,
+                color,
+                thickness,
             )
 
             # Display the depth image with ROI
@@ -224,15 +290,22 @@ class AccumulateOdometry(Node):
 
         if not self.detect_obstacles:
             return
-        self.get_logger().warn("Obstacle detected! Avoiding...")
+        # self.get_logger().warn("Obstacle detected! Avoiding...")
 
         twist = Twist()
         twist.linear.x = 0.1  # Move forward slowly
-        twist.angular.z = 2.5  # Turn slightly
-        twist.angular.z = -1 * twist.angular.z
-
+        twist.angular.z = 1.3  # Turn slightly
+        if self.left_detected > 0:
+            twist.angular.z = -1 * twist.angular.z
+        # print(twist.angular.z, self.left_detected, self.right_detected)
         if self.should_move:
+            self.utils.set_leds("#FF0000")
             self.move_publisher.publish(twist)
+
+        if self.left_detected > 0:
+            self.left_detected -= 1
+        if self.right_detected > 0:
+            self.right_detected -= 1
 
     def stop_robot(self):
         # Publish zero velocities to stop the robot
@@ -262,6 +335,11 @@ class AccumulateOdometry(Node):
         self.x and self.y are the location from odometry
 
         """
+        delta_x = self.target_x - self.x
+        delta_y = self.target_y - self.y
+        distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
+        if not self.use_markers or distance_to_target > 2.2:
+            return
         x = msg.point.x
         y = msg.point.y
 
@@ -295,8 +373,8 @@ class AccumulateOdometry(Node):
                 x, y = smoothed_state_means[-1]
 
         if np.sqrt((x - self.x) ** 2 + (y - self.y) ** 2) < 1:
-            self.x = 0.5 * x + 0.5 * self.x
-            self.y = 0.5 * y + 0.5 * self.y
+            self.x = 0.6 * x + 0.4 * self.x
+            self.y = 0.6 * y + 0.4 * self.y
 
             if self.publish_path:
                 # Update the path
@@ -342,9 +420,14 @@ class AccumulateOdometry(Node):
         self.prev_x = position.x
         self.prev_y = position.y
 
+        delta_x = self.target_x - self.x
+        delta_y = self.target_y - self.y
+        distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
+        self.distance_to_target = distance_to_target
+
         if self.print_pos:
             self.get_logger().info(
-                f"Accumulated Position -> x: {self.x:.2f}, y: {self.y:.2f}, Heading: {math.degrees(self.yaw):.2f}, Target Heading: {math.degrees(self.target_angle):.2f}",
+                f"Accumulated Position -> x: {self.x:.2f}, y: {self.y:.2f}, Heading: {math.degrees(self.yaw):.2f}, Target Heading: {math.degrees(self.target_angle):.2f}, Distance: {self.distance_to_target:.4f}",
             )
 
         if self.publish_path:
