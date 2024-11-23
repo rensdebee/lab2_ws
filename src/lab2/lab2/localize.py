@@ -5,7 +5,7 @@ from geometry_msgs.msg import Twist, PointStamped
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
-from lab2.utils import UTILS, undistort_from_saved_data
+from lab2.utils import UTILS
 import math
 from scipy.optimize import least_squares
 from rclpy.qos import QoSProfile, ReliabilityPolicy
