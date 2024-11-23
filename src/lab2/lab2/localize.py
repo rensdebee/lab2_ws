@@ -27,18 +27,13 @@ class LAB2(Node):
         self.br = CvBridge()
         self.cameras = [
             "/rae/right/image_raw",
-            "/rae/left_back/image_raw",
-            # "/rae/stereo_front/image_raw",
-            # "/rae/stereo_back/image_raw",
         ]
         self.frames = [None] * len(self.cameras)
         self.scale_factor = 2
 
         self.calibration_npzs = [
-            "./src/lab2/lab2/calibration_data.npz",
-            "./src/lab2/lab2/calibration_data_back.npz",
+            "./src/lab2/lab2/calibration_data_hd.npz",
         ]
-        #   self.calibration_npz = "src/lab2/lab2/5coeff_calibration_data.npz"
 
         arucoParams = cv2.aruco.DetectorParameters()
         arucoParams.adaptiveThreshWinSizeMin = 3
@@ -49,7 +44,7 @@ class LAB2(Node):
         arucoParams.perspectiveRemovePixelPerCell = 8
         arucoParams.perspectiveRemoveIgnoredMarginPerCell = 0.3
 
-        arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_CONTOUR
         arucoParams.cornerRefinementMinAccuracy = 0.001
         arucoParams.cornerRefinementMaxIterations = 100
 
@@ -87,7 +82,7 @@ class LAB2(Node):
         idx = self.cameras.index(topic_name)
         self.frames[idx] = current_frame
 
-        # self.display_queue.put((f"{idx}_raw", current_frame))
+        self.display_queue.put((f"{idx}_raw", current_frame))
 
     def display_frames(self):
         """Thread to handle displaying frames."""
@@ -105,17 +100,17 @@ class LAB2(Node):
         point_list = []
 
         # Resize and sharpen the image
-        scale_factor = 2
-        current_frame = cv2.resize(
-            current_frame,
-            None,
-            fx=scale_factor,
-            fy=scale_factor,
-            interpolation=cv2.INTER_CUBIC,
-        )
+        # scale_factor = 2
+        # current_frame = cv2.resize(
+        #     current_frame,
+        #     None,
+        #     fx=scale_factor,
+        #     fy=scale_factor,
+        #     interpolation=cv2.INTER_CUBIC,
+        # )
         # Sharpen the image
-        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-        current_frame = cv2.filter2D(current_frame, -1, kernel)
+        # kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+        # current_frame = cv2.filter2D(current_frame, -1, kernel)
 
         (corners, ids, _) = self.h11_detector.detectMarkers(current_frame)
         if ids is not None:
@@ -162,24 +157,23 @@ class LAB2(Node):
 
         # Rescale the corners
         old_corner = corner
-        corner = corner / self.scale_factor
+        # corner = corner / self.scale_factor
 
         success, r_vec, t_vec = cv2.solvePnP(marker, corner, camera_matrix, dist_coeffs)
         pose_dict = {
             "corners": corner,
             "t_vec": t_vec,
             "r_vec": r_vec,
-            "distance": math.sqrt(
+            "ground_distance": math.sqrt(
                 t_vec[0][0] ** 2 + t_vec[2][0] ** 2
             ),  # pythagoras between Z coordinate and x
             "distance_angle": (math.cos(r_vec[0][0]) * t_vec[2][0]),
+            "distance": np.sqrt(
+                (np.linalg.norm(t_vec)) ** 2
+                - (self.location_dict[tag_family][id][0][2]) ** 2
+            ),
         }
         if current_frame is not None:
-            # axis_length = 100
-            # cv2.drawFrameAxes(
-            #     current_frame, camera_matrix, dist_coeffs, r_vec, t_vec, axis_length
-            # )
-
             tvec_text = (
                 f"x:{t_vec[0][0]:.2f} , y:{t_vec[1][0]:.2f} z:{t_vec[2][0]:.2f} cm"
             )
@@ -202,7 +196,9 @@ class LAB2(Node):
                 thickness,
             )
 
-        return self.location_dict[tag_family][id][0] + [pose_dict["distance"]]
+        return self.location_dict[tag_family][id][0][:2] + [
+            pose_dict["ground_distance"]
+        ]
 
     def get_marker_points(self, marker_size):
         half_size = marker_size / 2
@@ -225,7 +221,7 @@ class LAB2(Node):
 
         d = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
 
-        # non intersecting[INFO] [1732098052.885673243] [accumulate_odometry]: Accumulated Position -> x: -0.48, y: -0.94
+        # non intersecting
         if d > r0 + r1:
             return None
         # One circle within other
@@ -288,7 +284,7 @@ class LAB2(Node):
             loc = self.trilateration(point_list)
 
         if loc is not None:
-            # print(f"Unfiltered loc: {loc}")
+            print(f"Unfiltered loc: {loc}")
             loc = self.check_field(loc)
             print(f"Filtered loc: {loc}")
             if loc is not None:

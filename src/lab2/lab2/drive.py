@@ -22,33 +22,43 @@ class AccumulateOdometry(Node):
     def __init__(self):
         super().__init__("accumulate_odometry")
 
+        # Send driving commands to robot
         self.should_move = True
+        # Use markers to relocalize
         self.use_markers = True
+        # Try to avoid obstacle
         self.detect_obstacles = False
 
+        # Log position to terminal
         self.print_pos = True
-        self.print_heading = False
+        # Publish path for rviz2
         self.publish_path = True
+        # Combine marker using kalman filter
         self.kalman_filter = True
-        self.obj_ticks = 10
-        self.min_clearance = 12
+        # Avoid obstacle for x amount of clock ticks
+        self.obj_ticks = 13
 
+        # Gain for driving
         self.angular_gain = 2.5
         self.linear_gain = 1  # 1
+
+        # Max speeds
         self.max_angular = 2.0  # 2.0
         self.max_speed = 0.1  # 0.1
 
+        # Starting coordinates and heading (yaw)
         self.start_x = 0
-        self.start_y = 0.05
+        self.start_y = 0
         self.start_yaw = math.radians(0)
 
-        self.error_radius = 0
+        # List of targets to drive via
         self.targets = []
-        self.targets.append([0, 3.2, 0.25])
-        # self.targets.append([1.15, 3.9, 0.2])
+
+        # Add target [X, Y, error radius]
+        # self.targets.append([-2, 2, 0.2])
 
         # # First right
-        # self.targets.append([2, 2.805, 0.2])
+        self.targets.append([2, 2.805, 0.2])
 
         # # First left
         # self.targets.append([-2, 2.805, 0.2])
@@ -60,72 +70,87 @@ class AccumulateOdometry(Node):
         # self.targets.append([-1.15, 3.9, 0.2])
 
         # # Middle
-        # self.targets.append([0, 3.2, 0.25])
+        # self.targets.append([0, 3.2, 0.2])
 
+        # Target info
         self.target_x = self.targets[0][0]
         self.target_y = self.targets[0][1]
         self.error_radius = self.targets[0][2]
+        self.distance_to_target = np.inf
 
+        # List of recieved marker localizations
         self.localization_list = []
 
+        # ROI for object avoidance
         self.roi_left = np.array(
-            [[(0, 335), (350, 335), (350, 400), (0, 400)]],
+            [[(0, 670), (700, 670), (700, 800), (0, 800)]],
             dtype=np.int32,
         )
         self.roi_right = np.array(
-            [[(350, 335), (640, 335), (640, 400), (350, 400)]],
+            [[(700, 670), (1280, 670), (1280, 800), (700, 800)]],
             dtype=np.int32,
         )
         self.roi_middle = np.array(
-            [[(150, 335), (450, 335), (450, 400), (150, 400)]],
+            [[(600, 670), (450, 670), (450, 800), (600, 800)]],
             dtype=np.int32,
         )
+
+        # Check if detected object in ROI
         self.left_detected = 0
         self.right_detected = 0
 
+        # Thread for displaying images
         self.display_queue = Queue()
         self.display_thread = threading.Thread(target=self.display_frames, daemon=True)
         self.display_thread.start()
-        self.distance_to_target = 0
+
+        # Utils to set led or screen
         self.utils = UTILS(self)
 
-        self.move_publisher = self.create_publisher(
-            Twist, "/cmd_vel", rclpy.qos.qos_profile_system_default
-        )
-
+        # Timer to update move commands
         self.timer = self.create_timer(
             timer_period_sec=0.06, callback=self.timer_callback
         )
 
+        # Publisher to send move commands to robot
+        self.move_publisher = self.create_publisher(
+            Twist, "/cmd_vel", rclpy.qos.qos_profile_system_default
+        )
+
+        # Subscribe to motor odometry
         self.odom_subscriber = self.create_subscription(
             Odometry, "/diff_controller/odom", self.odometry_callback, 10
         )
+
+        # Init position
         self.x = self.start_x
         self.y = self.start_y
         self.pos_init = False
         self.target_angle = 0
-        # /odometry/filtered
-        # /diff_controller/odom # Negtive X
-        cameras = ["/rae/stereo_front/image_raw"]
-        # "/rae/stereo_back/image_raw"
 
-        for topic in cameras:
-            self.create_subscription(
-                Image,
-                topic,
-                lambda msg, topic_name=topic: self.depth_callback(msg, topic_name),
-                qos_profile=QoSProfile(
-                    depth=1, reliability=ReliabilityPolicy.BEST_EFFORT
-                ),
-            )
-        self.bridge = CvBridge()
+        # Subscribe to depth camera
+        # depth_cameras = ["/rae/stereo_back/image_raw"]
+        # for topic in camdepth_cameraseras:
+        #     self.create_subscription(
+        #         Image,
+        #         topic,
+        #         lambda msg, topic_name=topic: self.depth_callback(msg, topic_name),
+        #         qos_profile=QoSProfile(
+        #             depth=1, reliability=ReliabilityPolicy.BEST_EFFORT
+        #         ),
+        #     )
+        # self.bridge = CvBridge()
 
+        # Subscribe to maker localization
         self.create_subscription(PointStamped, "/marker_loc", self.marker_callback, 10)
 
+        # Subsctie to IMU
         self.create_subscription(Imu, "/rae/imu/data", self.imu_callback, 10)
+        # Init heading (yaw)
         self.imu_offset_initialized = False
         self.yaw = self.start_yaw
 
+        # Path publisher
         if self.publish_path:
             self.path_publisher = self.create_publisher(Path, "/accumulated_path", 50)
 
@@ -137,43 +162,46 @@ class AccumulateOdometry(Node):
         self.get_logger().info("Accumulated Odometry Node Initialized")
 
     def display_frames(self):
-        """Thread to handle displaying frames."""
+        # Thread to handle displaying frames
         while True:
             try:
                 frame_id, frame = self.display_queue.get()
                 if frame is None:
-                    break  # Exit the thread
+                    break
                 cv2.imshow(f"Frame {frame_id}", frame)
                 cv2.waitKey(1)
             except Exception as e:
                 self.get_logger().error(f"Error in display thread: {e}")
 
     def timer_callback(self):
-        # Compute the distance and angle to the target
+        # Compute the distance to the target
         delta_x = self.target_x - self.x
         delta_y = self.target_y - self.y
         distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
         self.distance_to_target = distance_to_target
-        # Stop the robot if within the error radius
+
+        # Switch to next target if within error radius
         if distance_to_target < self.error_radius:
             self.utils.set_leds("#FFFF00")
             self.get_logger().info("Target reached!")
             self.targets.pop(0)
+            # If no more targets left stop robot
             if len(self.targets) == 0:
                 self.stop_robot()
-                self.utils.set_leds("#00FF00")
                 exit()
                 return
+            # else set new target
             self.target_x = self.targets[0][0]
             self.target_y = self.targets[0][1]
             self.error_radius = self.targets[0][2]
 
-        # Compute the distance and angle to the target
+        # Compute the distance to the possible new target
         delta_x = self.target_x - self.x
         delta_y = self.target_y - self.y
         distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
         self.distance_to_target = distance_to_target
 
+        # Avoid obstacles
         if (
             self.left_detected > 0 or self.right_detected > 0
         ) and self.detect_obstacles:
@@ -187,10 +215,11 @@ class AccumulateOdometry(Node):
         angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
         self.target_angle = target_angle
 
+        # Set velocities tuned by the gain
         angular_velocity = -1 * self.angular_gain * angle_diff
         linear_velocity = self.linear_gain * distance_to_target
 
-        # Create and publish the Twist message
+        # Create the Twist message
         twist = Twist()
         twist.linear.x = min(linear_velocity, self.max_speed)
         if self.distance_to_target > 2.5:
@@ -199,15 +228,13 @@ class AccumulateOdometry(Node):
             max_angular = self.max_angular
         twist.angular.z = max(-1 * max_angular, min(angular_velocity, max_angular))
 
-        # if twist.angular.z < 0:
-        #     print("Going right")
-        # elif twist.angular.z > 0:
-        #     print("Going left")
+        # Send message
         if self.should_move:
             self.move_publisher.publish(twist)
 
     def depth_callback(self, msg, topic_name):
-        """Process the depth camera image and display it."""
+        if self.right_detected > 0 or self.left_detected > 0:
+            return
         try:
             # Convert ROS Image to OpenCV format
             cv_image = self.bridge.imgmsg_to_cv2(msg)
@@ -224,11 +251,12 @@ class AccumulateOdometry(Node):
             cv2.fillPoly(mask, self.roi_middle, 255)
             middle_roi = cv2.bitwise_and(cv_image, mask)
 
+            print(np.mean(left_roi), np.mean(middle_roi), np.mean(right_roi))
             if "front" in topic_name and (
-                np.mean(left_roi) < 5.25 or np.mean(middle_roi) < 5.25
+                np.mean(left_roi) < 5.4 or np.mean(middle_roi) < 5.4
             ):
                 self.left_detected = self.obj_ticks
-            if "front" in topic_name and np.mean(right_roi) < 3.75:
+            if "front" in topic_name and np.mean(right_roi) < 3.9:
                 self.right_detected = self.obj_ticks
 
             # Draw the ROI polygon on the depth image
@@ -294,7 +322,7 @@ class AccumulateOdometry(Node):
 
         twist = Twist()
         twist.linear.x = 0.1  # Move forward slowly
-        twist.angular.z = 1.3  # Turn slightly
+        twist.angular.z = 1.2  # Turn slightly
         if self.left_detected > 0:
             twist.angular.z = -1 * twist.angular.z
         # print(twist.angular.z, self.left_detected, self.right_detected)
@@ -313,9 +341,10 @@ class AccumulateOdometry(Node):
         twist.linear.x = 0.0
         twist.angular.z = 0.0
         self.move_publisher.publish(twist)
+        self.utils.set_leds("#00FF00")
+        rclpy.shutdown()
 
     def angle_difference(self, target_angle, current_angle):
-        """Compute the smallest angular difference between two angles."""
         diff = target_angle - current_angle
         while diff > math.pi:
             diff -= 2 * math.pi
@@ -330,15 +359,10 @@ class AccumulateOdometry(Node):
         return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
 
     def marker_callback(self, msg):
-        """
-        x and y are location from localization
-        self.x and self.y are the location from odometry
-
-        """
         delta_x = self.target_x - self.x
         delta_y = self.target_y - self.y
         distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
-        if not self.use_markers or distance_to_target > 2.2:
+        if not self.use_markers or distance_to_target > 2.5:
             return
         x = msg.point.x
         y = msg.point.y
@@ -372,20 +396,20 @@ class AccumulateOdometry(Node):
 
                 x, y = smoothed_state_means[-1]
 
-        if np.sqrt((x - self.x) ** 2 + (y - self.y) ** 2) < 1:
-            self.x = 0.6 * x + 0.4 * self.x
-            self.y = 0.6 * y + 0.4 * self.y
+        # if np.sqrt((x - self.x) ** 2 + (y - self.y) ** 2) < 1:
+        self.x = 0.5 * x + 0.5 * self.x
+        self.y = 0.5 * y + 0.5 * self.y
 
-            if self.publish_path:
-                # Update the path
-                new_pose = PoseStamped()
-                new_pose.header = msg.header
-                new_pose.header.frame_id = "odom"
-                new_pose.pose.position.x = float(self.x)
-                new_pose.pose.position.y = float(self.y)
-                new_pose.pose.position.z = 0.0
-                self.path.poses.append(new_pose)
-                self.path_publisher.publish(self.path)
+        if self.publish_path:
+            # Update the path
+            new_pose = PoseStamped()
+            new_pose.header = msg.header
+            new_pose.header.frame_id = "odom"
+            new_pose.pose.position.x = float(self.x)
+            new_pose.pose.position.y = float(self.y)
+            new_pose.pose.position.z = 0.0
+            self.path.poses.append(new_pose)
+            self.path_publisher.publish(self.path)
 
     def imu_callback(self, msg):
         # Extract quaternion from IMU data
@@ -401,6 +425,7 @@ class AccumulateOdometry(Node):
             self.yaw_offset = yaw + self.start_yaw
             self.imu_offset_initialized = True
 
+        # Set yaw between 0 and 360
         self.yaw = self.normalize_angle(yaw - self.yaw_offset)
 
         if self.print_heading:
@@ -443,51 +468,22 @@ class AccumulateOdometry(Node):
 
     def correct_position(self, x, y):
         length = np.sqrt((x - self.prev_x) ** 2 + (y - self.prev_y) ** 2)
-
         self.x += length * math.sin(self.yaw)
         self.y += length * math.cos(self.yaw)
-
-    def reset_position(self):
-        # Create a request to reset the pose
-        self.request = SetPose.Request()
-
-        # Initialize the pose message
-        self.request.pose.header.stamp.sec = 0
-        self.request.pose.header.stamp.nanosec = 0
-        self.request.pose.header.frame_id = (
-            "odom"  # Make sure to use the correct frame ID
-        )
-
-        # Corrected access to position (pose.pose.position)
-        self.request.pose.pose.pose.position.x = float(self.start_x)
-        self.request.pose.pose.pose.position.y = float(self.start_y)
-        self.request.pose.pose.pose.position.z = 0.0
-
-        qx, qy, qz, qw = quaternion_from_euler(0, 0, 0)
-        self.request.pose.pose.pose.orientation.x = qx
-        self.request.pose.pose.pose.orientation.y = qy
-        self.request.pose.pose.pose.orientation.z = qz
-        self.request.pose.pose.pose.orientation.w = qw
-
-        # Set the covariance to zero (can be adjusted if needed)
-        self.request.pose.pose.covariance = [
-            0.0
-        ] * 36  # 6x6 covariance matrix, all zeros
-
-        # Call the service with the prepared request
-        future = self.client.call_async(self.request)
-        rclpy.spin_until_future_complete(self, future)
-        if future.result() is not None:
-            self.get_logger().info("Pose reset successful")
-        else:
-            self.get_logger().error("Failed to reset pose")
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = AccumulateOdometry()
-    rclpy.spin(node)
-    rclpy.shutdown()
+    try:
+        # Spin the node to call callback functions
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.get_logger().info("Keyboard interrupt caught in main loop.")
+    finally:
+        # Ensure node is properly destroyed and stopped on shutdown
+        node.destroy_node()
+        node.stop_robot()
 
 
 if __name__ == "__main__":

@@ -19,9 +19,8 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "lab2 = lab2.lab2:main",
-            "lab2_mt = lab2.lab2_mt:main",
-            "position = lab2.position:main",
+            "localize = lab2.localize:main",
+            "drive = lab2.drive:main",
         ],
     },
 )
