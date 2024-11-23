@@ -12,12 +12,14 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from lab2.measure import location_dict
 import threading
 from queue import Queue
+from nav_msgs.msg import Path
 
 
 class LAB2(Node):
     def __init__(self):
         self.find_markers = True
         self.check_in_field = True
+        self.dist_error = 15
 
         super().__init__("lab_2")
         self.utils = UTILS(self)
@@ -75,6 +77,15 @@ class LAB2(Node):
 
         self.publisher_ = self.create_publisher(PointStamped, "/marker_loc", 10)
 
+        self.path_subscription = self.create_subscription(
+            Path,
+            "/accumulated_path",  # Replace with your Path topic
+            self.path_callback,
+            1,  # QoS history depth
+        )
+        self.x = None
+        self.y = None
+
     def image_callback(self, data, topic_name):
         # Convert ROS Image message to OpenCV image
         current_frame = self.br.imgmsg_to_cv2(data)
@@ -82,7 +93,21 @@ class LAB2(Node):
         idx = self.cameras.index(topic_name)
         self.frames[idx] = current_frame
 
-        self.display_queue.put((f"{idx}_raw", current_frame))
+        # self.display_queue.put((f"{idx}_raw", current_frame))
+
+    def path_callback(self, msg: Path):
+        # Check if the path has any poses
+        if not msg.poses:
+            self.get_logger().warn("Received an empty Path message.")
+            return
+
+        # Extract the latest pose
+        latest_pose = msg.poses[-1].pose  # Last pose in the path
+        self.x = latest_pose.position.x
+        self.y = latest_pose.position.y
+
+        # # Log the coordinates
+        self.get_logger().info(f"Latest coordinates: x={self.x}, y={self.y}")
 
     def display_frames(self):
         """Thread to handle displaying frames."""
@@ -99,15 +124,6 @@ class LAB2(Node):
     def detect_makers(self, cam_id, current_frame):
         point_list = []
 
-        # Resize and sharpen the image
-        # scale_factor = 2
-        # current_frame = cv2.resize(
-        #     current_frame,
-        #     None,
-        #     fx=scale_factor,
-        #     fy=scale_factor,
-        #     interpolation=cv2.INTER_CUBIC,
-        # )
         # Sharpen the image
         # kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
         # current_frame = cv2.filter2D(current_frame, -1, kernel)
@@ -134,15 +150,15 @@ class LAB2(Node):
         if ids is not None:
             for c, id in zip(corners, ids):
                 if id[0] in self.location_dict[tag_family]:
-                    point_list.append(
-                        self.get_point_pose(
-                            c,
-                            id[0],
-                            tag_family,
-                            cam_id,
-                            current_frame,
-                        )
+                    pose = self.get_point_pose(
+                        c,
+                        id[0],
+                        tag_family,
+                        cam_id,
+                        current_frame,
                     )
+                    if pose is not None:
+                        point_list.append(pose)
                     if current_frame is not None:
                         cv2.aruco.drawDetectedMarkers(
                             current_frame, np.array([c]), np.array([id])
@@ -173,6 +189,15 @@ class LAB2(Node):
                 - (self.location_dict[tag_family][id][0][2]) ** 2
             ),
         }
+        distance = pose_dict["distance"]
+        predicted_dist = 0
+        if self.x is not None:
+            marker_x = self.location_dict[tag_family][id][0][0]
+            marker_y = self.location_dict[tag_family][id][0][1]
+            predicted_dist = np.sqrt(
+                (self.x - marker_x) ** 2 + (self.y - marker_y) ** 2
+            )
+
         if current_frame is not None:
             tvec_text = (
                 f"x:{t_vec[0][0]:.2f} , y:{t_vec[1][0]:.2f} z:{t_vec[2][0]:.2f} cm"
@@ -182,7 +207,7 @@ class LAB2(Node):
             text_position = tuple(old_corner[0][0].ravel().astype(int))
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.6
-            color = (0, 255, 0)  # Green color for the text
+            color = (0, 255, 0) if predicted_dist < self.dist_error else (0, 0, 255)
             thickness = 2
 
             # Put the text on the image
@@ -195,10 +220,10 @@ class LAB2(Node):
                 color,
                 thickness,
             )
-
-        return self.location_dict[tag_family][id][0][:2] + [
-            pose_dict["ground_distance"]
-        ]
+        if predicted_dist > self.dist_error:
+            return None
+        else:
+            return self.location_dict[tag_family][id][0][:2] + [distance]
 
     def get_marker_points(self, marker_size):
         half_size = marker_size / 2
@@ -324,13 +349,12 @@ class LAB2(Node):
         # Triangulate
         self.locate(point_list)
 
-    def stop(self, signum=None, frame=None):
-        self.utils.set_leds("#ce10e3")
-        self.move_publisher.publish(Twist())
-        self.utils.draw_text(f"Shut down")
-        self.destroy_node()
-        rclpy.shutdown()
-        exit()
+    # def stop(self, signum=None, frame=None):
+    #     self.utils.set_leds("#00FF00")
+    #     self.utils.draw_text(f"Shut down")
+    #     self.destroy_node()
+    #     rclpy.shutdown()
+    #     exit()
 
 
 def main(args=None):
@@ -338,16 +362,7 @@ def main(args=None):
     rclpy.init(args=args)
 
     lab2 = LAB2()
-
-    try:
-        # Spin the node to call callback functions
-        rclpy.spin(lab2)
-    except KeyboardInterrupt:
-        lab2.get_logger().info("Keyboard interrupt caught in main loop.")
-    finally:
-        # Ensure node is properly destroyed and stopped on shutdown
-        lab2.destroy_node()
-        lab2.stop()
+    rclpy.spin(lab2)
 
 
 if __name__ == "__main__":

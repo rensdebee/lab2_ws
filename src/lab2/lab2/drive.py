@@ -11,7 +11,8 @@ import numpy as np
 import cv2
 import threading
 from queue import Queue
-from pykalman import KalmanFilter
+from filterpy.kalman import KalmanFilter
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 import numpy as np
 from lab2.utils import UTILS
 
@@ -21,14 +22,14 @@ class AccumulateOdometry(Node):
         super().__init__("accumulate_odometry")
 
         # Send driving commands to robot
-        self.should_move = True
+        self.should_move = False
         # Use markers to relocalize
         self.use_markers = True
         # Try to avoid obstacle
-        self.detect_obstacles = False
+        self.detect_obstacles = True
 
         # Log position to terminal
-        self.print_pos = True
+        self.print_pos = False
         # Publish path for rviz2
         self.publish_path = True
         # Combine marker using kalman filter
@@ -56,7 +57,7 @@ class AccumulateOdometry(Node):
         # self.targets.append([-2, 2, 0.2])
 
         # # First right
-        self.targets.append([2, 2.805, 0.2])
+        self.targets.append([0, 0.2, 0.05])
 
         # # First left
         # self.targets.append([-2, 2.805, 0.2])
@@ -80,22 +81,14 @@ class AccumulateOdometry(Node):
         self.localization_list = []
 
         # ROI for object avoidance
-        self.roi_left = np.array(
-            [[(0, 670), (700, 670), (700, 800), (0, 800)]],
-            dtype=np.int32,
-        )
-        self.roi_right = np.array(
-            [[(700, 670), (1280, 670), (1280, 800), (700, 800)]],
-            dtype=np.int32,
-        )
-        self.roi_middle = np.array(
-            [[(600, 670), (450, 670), (450, 800), (600, 800)]],
+        self.roi = np.array(
+            [[(1280, 670), (0, 670), (0, 800), (1280, 800)]],
             dtype=np.int32,
         )
 
         # Check if detected object in ROI
-        self.left_detected = 0
-        self.right_detected = 0
+        self.obj_detected = 0
+        self.obj_x = None
 
         # Thread for displaying images
         self.display_queue = Queue()
@@ -125,19 +118,35 @@ class AccumulateOdometry(Node):
         self.y = self.start_y
         self.pos_init = False
         self.target_angle = 0
+        # Initialize Kalman Filter
+        self.kf = KalmanFilter(dim_x=2, dim_z=2)
+        # Initial state (X, Y)
+        self.kf.x = np.array([self.x, self.y])  # Starting at origin
+        # State transition matrix (F) - constant position model
+        self.kf.F = np.eye(2)
+        # Observation matrix (H)
+        self.kf.H = np.eye(2)
+        # Process noise covariance (Q)
+        self.kf.Q = np.eye(2) * 0.1  # Small process noise
+        # State covariance matrix (P)
+        self.kf.P = np.eye(2) * 1.0  # Initial uncertainty
+        # Measurement uncertainty for odometry
+        self.R_odom = np.eye(2) * 0.1  # Higher uncertainty for odometry
+        # Measurement uncertainty for marker
+        self.R_marker = np.eye(2) * 0.2  # Lower uncertainty for marker
 
         # Subscribe to depth camera
-        # depth_cameras = ["/rae/stereo_back/image_raw"]
-        # for topic in camdepth_cameraseras:
-        #     self.create_subscription(
-        #         Image,
-        #         topic,
-        #         lambda msg, topic_name=topic: self.depth_callback(msg, topic_name),
-        #         qos_profile=QoSProfile(
-        #             depth=1, reliability=ReliabilityPolicy.BEST_EFFORT
-        #         ),
-        #     )
-        # self.bridge = CvBridge()
+        depth_cameras = ["/rae/right/image_raw"]
+        for topic in depth_cameras:
+            self.create_subscription(
+                Image,
+                topic,
+                lambda msg, topic_name=topic: self.depth_callback(msg, topic_name),
+                qos_profile=QoSProfile(
+                    depth=1, reliability=ReliabilityPolicy.BEST_EFFORT
+                ),
+            )
+        self.bridge = CvBridge()
 
         # Subscribe to maker localization
         self.create_subscription(PointStamped, "/marker_loc", self.marker_callback, 10)
@@ -155,7 +164,7 @@ class AccumulateOdometry(Node):
         self.path = Path()
         self.path.header.frame_id = "odom"
 
-        self.utils.set_leds("#FF00FF")
+        self.utils.set_leds("#000000")
 
         self.get_logger().info("Accumulated Odometry Node Initialized")
 
@@ -200,12 +209,10 @@ class AccumulateOdometry(Node):
         self.distance_to_target = distance_to_target
 
         # Avoid obstacles
-        if (
-            self.left_detected > 0 or self.right_detected > 0
-        ) and self.detect_obstacles:
+        if self.obj_detected > 0 and self.detect_obstacles:
             self.avoid_obstacle()
             return
-        self.utils.set_leds("#FF00FF")
+        self.utils.set_leds("#000000")
 
         # Compute the angle difference
         target_angle = math.atan2(delta_x, delta_y) % (2 * math.pi)
@@ -231,82 +238,101 @@ class AccumulateOdometry(Node):
             self.move_publisher.publish(twist)
 
     def depth_callback(self, msg, topic_name):
-        if self.right_detected > 0 or self.left_detected > 0:
-            return
         try:
             # Convert ROS Image to OpenCV format
-            cv_image = self.bridge.imgmsg_to_cv2(msg)
+            image = self.bridge.imgmsg_to_cv2(msg)
+            threshold_up = [30, 30, 30]
+            threshold_down = [0, 0, 0]
+            mask = np.zeros(image.shape[:2], dtype=np.uint8)
+            polygon_points = np.array([self.roi], dtype=np.int32)
+            cv2.fillPoly(mask, polygon_points, 255)
 
-            mask = np.zeros_like(cv_image)
-            cv2.fillPoly(mask, self.roi_left, 255)
-            left_roi = cv2.bitwise_and(cv_image, mask)
-
-            mask = np.zeros_like(cv_image)
-            cv2.fillPoly(mask, self.roi_right, 255)
-            right_roi = cv2.bitwise_and(cv_image, mask)
-
-            mask = np.zeros_like(cv_image)
-            cv2.fillPoly(mask, self.roi_middle, 255)
-            middle_roi = cv2.bitwise_and(cv_image, mask)
-
-            print(np.mean(left_roi), np.mean(middle_roi), np.mean(right_roi))
-            if "front" in topic_name and (
-                np.mean(left_roi) < 5.4 or np.mean(middle_roi) < 5.4
-            ):
-                self.left_detected = self.obj_ticks
-            if "front" in topic_name and np.mean(right_roi) < 3.9:
-                self.right_detected = self.obj_ticks
-
-            # Draw the ROI polygon on the depth image
-            object_detected = False
-            cv_image = cv_image
-            cv_image = (cv_image / cv_image.max()) * 255
-            cv_image = cv_image.astype(np.uint8)
-            image_with_roi = cv2.cvtColor(cv_image, cv2.COLOR_GRAY2BGR)
+            # Create visualization image
+            visualization = image.copy()
             cv2.polylines(
-                image_with_roi,
-                self.roi_left,
-                isClosed=True,
-                color=(0, 0, 255) if self.left_detected > 0 else (255, 0, 0),
-                thickness=2,
+                visualization,
+                polygon_points,
+                True,
+                (0, 255, 0) if self.obj_detected == 0 else (0, 0, 255),
+                2,
             )
-            cv2.polylines(
-                image_with_roi,
-                self.roi_right,
-                isClosed=True,
-                color=(0, 0, 255) if self.right_detected > 0 else (255, 0, 0),
-                thickness=2,
-            )
-            cv2.polylines(
-                image_with_roi,
-                self.roi_middle,
-                isClosed=True,
-                color=(0, 0, 255) if np.mean(middle_roi) < 5 else (255, 0, 0),
-                thickness=2,
-            )
-            self.distance_to_target
-            text = f"Distance to target: {self.distance_to_target:.4f}m"
 
-            # Define the position for the text (top-left corner of the image)
-            text_position = (0, 40)
+            # Create black pixel mask by checking each channel
+            black_mask = np.logical_and.reduce(
+                (
+                    (image[:, :, 0] > threshold_down[0])
+                    & (image[:, :, 0] < threshold_up[0]),  # B channel
+                    (image[:, :, 1] > threshold_down[1])
+                    & (image[:, :, 1] < threshold_up[1]),  # G channel
+                    (image[:, :, 2] > threshold_down[2])
+                    & (image[:, :, 2] < threshold_up[2]),  # R channel
+                )
+            )
+
+            # Combine with polygon mask to only get black pixels inside polygon
+            black_mask = black_mask & (mask > 0)
+
+            # Count black pixels and calculate area
+            black_pixel_count = np.sum(black_mask)
+            polygon_area = np.sum(mask > 0)
+
+            # Calculate percentage of black pixels within polygon
+            black_percentage = (
+                (black_pixel_count / polygon_area) * 100 if polygon_area > 0 else 0
+            )
+
+            # Calculate centroid of black pixels
+            centroid = None
+            if np.any(black_mask):
+                y_coords, x_coords = np.where(black_mask)
+                centroid_x = int(np.mean(x_coords))
+                centroid_y = int(np.mean(y_coords))
+                centroid = (centroid_x, centroid_y)
+
+                # Draw centroid on visualization
+                cv2.circle(visualization, centroid, 5, (0, 255, 255), -1)  # Yellow dot
+                cv2.putText(
+                    visualization,
+                    f"({centroid_x}, {centroid_y})",
+                    (centroid_x + 10, centroid_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 255),
+                    1,
+                )
+
+            # Highlight detected black pixels in the visualization
+            visualization[black_mask] = [0, 0, 255]  # Red color
+
+            text = [
+                f"Distance to target: {self.distance_to_target:.4f}m",
+                f"Black_pixels: {black_pixel_count}",
+                f"Black_percentage: {black_percentage}",
+                f"Black_mean: {centroid}",
+            ]
+            text_x, text_y = (0, 10)
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.6
             color = (0, 255, 0)  # Green color for the text
             thickness = 2
-
-            # Put the text on the image
-            cv2.putText(
-                image_with_roi,
-                text,
-                text_position,
-                font,
-                font_scale,
-                color,
-                thickness,
-            )
+            for i, line in enumerate(text):
+                cv2.putText(
+                    visualization,
+                    line,
+                    (text_x, text_y + i * 25),
+                    font,
+                    font_scale,
+                    color,
+                    thickness,
+                )
 
             # Display the depth image with ROI
-            self.display_queue.put((topic_name, image_with_roi))
+            self.display_queue.put((topic_name, visualization))
+            if self.obj_detected > 0 or not self.detect_obstacles:
+                return
+            elif black_percentage > 5:
+                self.obj_detected = self.obj_ticks
+                self.obj_x = centroid_x
 
         except Exception as e:
             self.get_logger().error(f"Depth image processing failed: {e}")
@@ -316,31 +342,18 @@ class AccumulateOdometry(Node):
 
         if not self.detect_obstacles:
             return
-        # self.get_logger().warn("Obstacle detected! Avoiding...")
+        self.utils.set_leds("#FF0000")
 
         twist = Twist()
         twist.linear.x = 0.1  # Move forward slowly
         twist.angular.z = 1.2  # Turn slightly
-        if self.left_detected > 0:
+        if self.obj_x < 680:
             twist.angular.z = -1 * twist.angular.z
         # print(twist.angular.z, self.left_detected, self.right_detected)
         if self.should_move:
-            self.utils.set_leds("#FF0000")
             self.move_publisher.publish(twist)
-
-        if self.left_detected > 0:
-            self.left_detected -= 1
-        if self.right_detected > 0:
-            self.right_detected -= 1
-
-    def stop_robot(self):
-        # Publish zero velocities to stop the robot
-        twist = Twist()
-        twist.linear.x = 0.0
-        twist.angular.z = 0.0
-        self.move_publisher.publish(twist)
-        self.utils.set_leds("#00FF00")
-        rclpy.shutdown()
+        if self.obj_detected > 0:
+            self.obj_detected -= 1
 
     def angle_difference(self, target_angle, current_angle):
         diff = target_angle - current_angle
@@ -357,46 +370,53 @@ class AccumulateOdometry(Node):
         return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
 
     def marker_callback(self, msg):
-        delta_x = self.target_x - self.x
-        delta_y = self.target_y - self.y
-        distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
-        if not self.use_markers or distance_to_target > 2.5:
+        # delta_x = self.target_x - self.x
+        # delta_y = self.target_y - self.y
+        # distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
+        # or distance_to_target > 2.5
+        if not self.use_markers:
             return
         x = msg.point.x
         y = msg.point.y
 
-        if self.kalman_filter:
-            ##apply kalman filter on the localization data
-            if len(self.localization_list) == 0:
-                self.localization_list.append(np.asarray([x, y]))
-                x, y = x, y
-            else:
-                self.localization_list.append(np.asarray([x, y]))
+        # if self.kalman_filter:
+        #     ##apply kalman filter on the localization data
+        #     if len(self.localization_list) == 0:
+        #         self.localization_list.append(np.asarray([x, y]))
+        #         x, y = x, y
+        #     else:
+        #         self.localization_list.append(np.asarray([x, y]))
 
-                if len(self.localization_list) < 7:
-                    measurements = np.array(self.localization_list)
-                else:
-                    measurements = np.array(self.localization_list[-7:])
+        #         if len(self.localization_list) < 7:
+        #             measurements = np.array(self.localization_list)
+        #         else:
+        #             measurements = np.array(self.localization_list[-7:])
 
-                transition_matrices = [[1, 1], [0, 1]]
-                # transition_matrices = np.identity(len(measurements))
-                observation_matrices = [[1, 0], [0, 1]]
-                kf = KalmanFilter(
-                    transition_matrices=transition_matrices,
-                    observation_matrices=observation_matrices,
-                )
+        #         transition_matrices = [[1, 1], [0, 1]]
+        #         # transition_matrices = np.identity(len(measurements))
+        #         observation_matrices = [[1, 0], [0, 1]]
+        #         kf = KalmanFilter(
+        #             transition_matrices=transition_matrices,
+        #             observation_matrices=observation_matrices,
+        #         )
 
-                kf = kf.em(measurements)
-                (_, _) = kf.filter(measurements)
-                (smoothed_state_means, smoothed_state_covariances) = kf.smooth(
-                    measurements
-                )
+        #         kf = kf.em(measurements)
+        #         (_, _) = kf.filter(measurements)
+        #         (smoothed_state_means, smoothed_state_covariances) = kf.smooth(
+        #             measurements
+        #         )
 
-                x, y = smoothed_state_means[-1]
+        #         x, y = smoothed_state_means[-1]
 
         # if np.sqrt((x - self.x) ** 2 + (y - self.y) ** 2) < 1:
-        self.x = 0.5 * x + 0.5 * self.x
-        self.y = 0.5 * y + 0.5 * self.y
+        # self.x = 0.5 * x + 0.5 * self.x
+        # self.y = 0.5 * y + 0.5 * self.y
+
+        self.kf.predict()
+        self.kf.R = self.R_marker
+        self.kf.update([x, y])
+        self.x = self.kf.x.flatten()[0]
+        self.y = self.kf.x.flatten()[1]
 
         if self.publish_path:
             # Update the path
@@ -426,9 +446,6 @@ class AccumulateOdometry(Node):
         # Set yaw between 0 and 360
         self.yaw = self.normalize_angle(yaw - self.yaw_offset)
 
-        if self.print_heading:
-            self.get_logger().info(f"Heading: {math.degrees(self.yaw):.2f} degrees")
-
     def odometry_callback(self, msg):
         # Extract pose from odometry message
         position = msg.pose.pose.position
@@ -450,7 +467,7 @@ class AccumulateOdometry(Node):
 
         if self.print_pos:
             self.get_logger().info(
-                f"Accumulated Position -> x: {self.x:.2f}, y: {self.y:.2f}, Heading: {math.degrees(self.yaw):.2f}, Target Heading: {math.degrees(self.target_angle):.2f}, Distance: {self.distance_to_target:.4f}",
+                f"Accumulated Position -> x: {self.x:.2f}, y: {self.y:.2f}, Heading: {math.degrees(self.yaw):.2f}, Target Heading: {math.degrees(self.target_angle):.2f}, Distance: {self.distance_to_target:.4f}, Uncertainty: {np.sqrt(np.diag(self.kf.P))}",
             )
 
         if self.publish_path:
@@ -466,8 +483,25 @@ class AccumulateOdometry(Node):
 
     def correct_position(self, x, y):
         length = np.sqrt((x - self.prev_x) ** 2 + (y - self.prev_y) ** 2)
-        self.x += length * math.sin(self.yaw)
-        self.y += length * math.cos(self.yaw)
+        self.kf.predict()
+        self.kf.R = self.R_odom
+        self.kf.update(
+            [
+                self.x + (length * math.sin(self.yaw)),
+                self.y + (length * math.cos(self.yaw)),
+            ]
+        )
+        self.x = self.kf.x.flatten()[0]
+        self.y = self.kf.x.flatten()[1]
+
+    def stop_robot(self):
+        # Publish zero velocities to stop the robot
+        twist = Twist()
+        twist.linear.x = 0.0
+        twist.angular.z = 0.0
+        self.move_publisher.publish(twist)
+        self.utils.set_leds("#00FF00")
+        self.utils.draw_text(f"Shut down")
 
 
 def main(args=None):
@@ -480,8 +514,9 @@ def main(args=None):
         node.get_logger().info("Keyboard interrupt caught in main loop.")
     finally:
         # Ensure node is properly destroyed and stopped on shutdown
-        node.destroy_node()
         node.stop_robot()
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":
