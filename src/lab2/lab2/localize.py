@@ -185,8 +185,10 @@ class LAB2(Node):
             ),  # pythagoras between Z coordinate and x
             "distance_angle": (math.cos(r_vec[0][0]) * t_vec[2][0]),
             "distance": np.sqrt(
+                abs(
                 (np.linalg.norm(t_vec)) ** 2
                 - (self.location_dict[tag_family][id][0][2]) ** 2
+                )
             ),
         }
         distance = pose_dict["distance"]
