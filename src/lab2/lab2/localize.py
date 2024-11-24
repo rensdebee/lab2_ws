@@ -280,11 +280,8 @@ class LAB2(Node):
         def residuals(position, markers, distances):
             return np.linalg.norm(markers - position, axis=1) - distances
 
-        # Initial guess for the position
-        initial_guess = np.mean(markers, axis=0)
-
         # Use least squares to minimize the residuals
-        result = least_squares(residuals, initial_guess, args=(markers, distances))
+        result = least_squares(residuals, (0,0), args=(markers, distances))
 
         # Estimated position
         loc = result.x
