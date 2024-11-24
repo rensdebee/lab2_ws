@@ -40,13 +40,14 @@ class LAB2(Node):
         arucoParams = cv2.aruco.DetectorParameters()
         arucoParams.adaptiveThreshWinSizeMin = 3
         arucoParams.adaptiveThreshWinSizeMax = 21
-        arucoParams.adaptiveThreshWinSizeStep = 5
-        arucoParams.polygonalApproxAccuracyRate = 0.04
+        arucoParams.adaptiveThreshWinSizeStep = 3
+        arucoParams.polygonalApproxAccuracyRate = 0.03
         arucoParams.minCornerDistanceRate = 0.001
+        # Most tags are 6x6 + 2 for the border is 8
         arucoParams.perspectiveRemovePixelPerCell = 8
-        arucoParams.perspectiveRemoveIgnoredMarginPerCell = 0.3
+        arucoParams.perspectiveRemoveIgnoredMarginPerCell = 0.1
 
-        arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_CONTOUR
+        arucoParams.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
         arucoParams.cornerRefinementMinAccuracy = 0.001
         arucoParams.cornerRefinementMaxIterations = 100
 
@@ -55,11 +56,13 @@ class LAB2(Node):
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
         self.h11_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
 
-        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_7X7_100)
-        self.seven_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
-
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_MIP_36h12)
         self.h12_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
+
+        # These tags are 7x7 + 2 for the border = 9
+        arucoParams.perspectiveRemovePixelPerCell = 9
+        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_7X7_100)
+        self.seven_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
 
         for topic in self.cameras:
             self.create_subscription(
