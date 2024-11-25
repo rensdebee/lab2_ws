@@ -20,6 +20,8 @@ setup(
     entry_points={
         "console_scripts": [
             "localize = lab2.localize:main",
+            "color = lab2.color:main",
+            "depth = lab2.depth:main",
             "drive = lab2.drive:main",
         ],
     },

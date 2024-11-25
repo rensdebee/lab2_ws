@@ -3,10 +3,9 @@ from rclpy.node import Node
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
 from tf_transformations import euler_from_quaternion
-from geometry_msgs.msg import Twist, PointStamped
+from geometry_msgs.msg import Twist, PointStamped, Point
 import math
-from sensor_msgs.msg import Image, Imu
-from cv_bridge import CvBridge
+from sensor_msgs.msg import Imu
 import numpy as np
 import cv2
 import threading
@@ -29,10 +28,9 @@ class AccumulateOdometry(Node):
         self.use_markers = True
         # Try to avoid obstacle
         self.detect_obstacles = True
-        self.obj_pct = 2.75
 
         # Log position to terminal
-        self.print_pos = False
+        self.print_pos = True
         # Publish path for rviz2
         self.publish_path = True
         # Combine marker using kalman filter
@@ -60,10 +58,10 @@ class AccumulateOdometry(Node):
         # self.targets.append([-2, 2, 0.2])
 
         # # First right
-        self.targets.append([2, 2.805, 0.1])
+        # self.targets.append([2, 2.805, 0.1])
 
         # # First left
-        # self.targets.append([-2, 2.805, 0.2])
+        self.targets.append([-2, 2.805, 0.2])
 
         # Second right
         # self.targets.append([1.15, 3.9, 0.1])
@@ -138,19 +136,6 @@ class AccumulateOdometry(Node):
         # Measurement uncertainty for marker
         self.R_marker = np.eye(2) * 0.13  # Lower uncertainty for marker
 
-        # Subscribe to depth camera
-        depth_cameras = ["/rae/right/image_raw"]
-        for topic in depth_cameras:
-            self.create_subscription(
-                Image,
-                topic,
-                lambda msg, topic_name=topic: self.depth_callback(msg, topic_name),
-                qos_profile=QoSProfile(
-                    depth=1, reliability=ReliabilityPolicy.BEST_EFFORT
-                ),
-            )
-        self.bridge = CvBridge()
-
         # Subscribe to maker localization
         self.create_subscription(PointStamped, "/marker_loc", self.marker_callback, 10)
 
@@ -166,6 +151,10 @@ class AccumulateOdometry(Node):
 
         self.path = Path()
         self.path.header.frame_id = "odom"
+
+        self.subscription = self.create_subscription(
+            Point, "/object", self.object_callback, 10
+        )
 
         self.utils.set_leds("#FF00FF")
 
@@ -243,107 +232,10 @@ class AccumulateOdometry(Node):
         if self.should_move:
             self.move_publisher.publish(twist)
 
-    def depth_callback(self, msg, topic_name):
-        try:
-            # Convert ROS Image to OpenCV format
-            image = self.bridge.imgmsg_to_cv2(msg)
-            threshold_up = [90, 30, 35]
-            threshold_down = [5, 3, 3]
-            mask = np.zeros(image.shape[:2], dtype=np.uint8)
-            polygon_points = np.array([self.roi], dtype=np.int32)
-            cv2.fillPoly(mask, polygon_points, 255)
-
-            # Create visualization image
-            visualization = image.copy()
-
-            # Create black pixel mask by checking each channel
-            black_mask = np.logical_and.reduce(
-                (
-                    (image[:, :, 0] > threshold_down[0])
-                    & (image[:, :, 0] < threshold_up[0]),  # B channel
-                    (image[:, :, 1] > threshold_down[1])
-                    & (image[:, :, 1] < threshold_up[1]),  # G channel
-                    (image[:, :, 2] > threshold_down[2])
-                    & (image[:, :, 2] < threshold_up[2]),  # R channel
-                )
-            )
-
-            # Combine with polygon mask to only get black pixels inside polygon
-            black_mask = black_mask & (mask > 0)
-
-            # Count black pixels and calculate area
-            black_pixel_count = np.sum(black_mask)
-            polygon_area = np.sum(mask > 0)
-
-            # Calculate percentage of black pixels within polygon
-            black_percentage = (
-                (black_pixel_count / polygon_area) * 100 if polygon_area > 0 else 0
-            )
-            detection = black_percentage > self.obj_pct
-            # Highlight detected black pixels in the visualization
-            visualization[black_mask] = [0, 0, 255]  # Red color
-
-            cv2.polylines(
-                visualization,
-                polygon_points,
-                True,
-                (0, 255, 0) if detection == 0 else (0, 0, 255),
-                2,
-            )
-
-            # Calculate centroid of black pixels
-            centroid = None
-            if np.any(black_mask):
-                y_coords, x_coords = np.where(black_mask)
-                centroid_x = int(np.mean(x_coords))
-                centroid_y = int(np.mean(y_coords))
-                centroid = (centroid_x, centroid_y)
-
-                # Draw centroid on visualization
-                cv2.circle(visualization, centroid, 5, (0, 255, 255), -1)  # Yellow dot
-                cv2.putText(
-                    visualization,
-                    f"({centroid_x}, {centroid_y})",
-                    (centroid_x + 10, centroid_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 255),
-                    1,
-                )
-
-            text = [
-                f"Distance to target: {self.distance_to_target:.4f}m",
-                f"Black_pixels: {black_pixel_count}",
-                f"Black_percentage: {black_percentage}",
-                f"Black_mean: {centroid}",
-            ]
-            text_x, text_y = (0, 10)
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.6
-            color = (0, 255, 0)  # Green color for the text
-            thickness = 2
-            for i, line in enumerate(text):
-                cv2.putText(
-                    visualization,
-                    line,
-                    (text_x, text_y + i * 25),
-                    font,
-                    font_scale,
-                    color,
-                    thickness,
-                )
-
-            # Display the depth image with ROI
-            self.display_queue.put((topic_name, visualization))
-
-            if self.obj_detected > 0 or not self.detect_obstacles:
-                return
-            elif detection:
-                self.obj_detected = self.obj_ticks
-                self.obj_x = centroid_x
-
-        except Exception as e:
-            self.get_logger().error(f"Depth image processing failed: {e}")
+    def object_callback(self, msg):
+        self.obj_x = msg.x
+        if bool(msg.y) and self.obj_detected == 0 and self.detect_obstacles:
+            self.obj_detected = self.obj_ticks
 
     def avoid_obstacle(self):
         """Avoid the obstacle by moving forward and turning."""
