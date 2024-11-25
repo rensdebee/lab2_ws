@@ -16,6 +16,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 import numpy as np
 from lab2.utils import UTILS
 from time import sleep
+from scipy.stats import mode
 
 
 class AccumulateOdometry(Node):
@@ -23,11 +24,12 @@ class AccumulateOdometry(Node):
         super().__init__("accumulate_odometry")
 
         # Send driving commands to robot
-        self.should_move = False
+        self.should_move = True
         # Use markers to relocalize
         self.use_markers = True
         # Try to avoid obstacle
-        self.detect_obstacles = False
+        self.detect_obstacles = True
+        self.obj_pct = 2.75
 
         # Log position to terminal
         self.print_pos = False
@@ -36,7 +38,7 @@ class AccumulateOdometry(Node):
         # Combine marker using kalman filter
         self.kalman_filter = True
         # Avoid obstacle for x amount of clock ticks
-        self.obj_ticks = 13
+        self.obj_ticks = 8
 
         # Gain for driving
         self.angular_gain = 2.5
@@ -101,7 +103,7 @@ class AccumulateOdometry(Node):
 
         # Timer to update move commands
         self.timer = self.create_timer(
-            timer_period_sec=0.06, callback=self.timer_callback
+            timer_period_sec=0.1, callback=self.timer_callback
         )
 
         # Publisher to send move commands to robot
@@ -245,7 +247,7 @@ class AccumulateOdometry(Node):
         try:
             # Convert ROS Image to OpenCV format
             image = self.bridge.imgmsg_to_cv2(msg)
-            threshold_up = [45, 45, 35]
+            threshold_up = [90, 30, 35]
             threshold_down = [5, 3, 3]
             mask = np.zeros(image.shape[:2], dtype=np.uint8)
             polygon_points = np.array([self.roi], dtype=np.int32)
@@ -253,13 +255,6 @@ class AccumulateOdometry(Node):
 
             # Create visualization image
             visualization = image.copy()
-            cv2.polylines(
-                visualization,
-                polygon_points,
-                True,
-                (0, 255, 0) if self.obj_detected == 0 else (0, 0, 255),
-                2,
-            )
 
             # Create black pixel mask by checking each channel
             black_mask = np.logical_and.reduce(
@@ -284,6 +279,17 @@ class AccumulateOdometry(Node):
             black_percentage = (
                 (black_pixel_count / polygon_area) * 100 if polygon_area > 0 else 0
             )
+            detection = black_percentage > self.obj_pct
+            # Highlight detected black pixels in the visualization
+            visualization[black_mask] = [0, 0, 255]  # Red color
+
+            cv2.polylines(
+                visualization,
+                polygon_points,
+                True,
+                (0, 255, 0) if detection == 0 else (0, 0, 255),
+                2,
+            )
 
             # Calculate centroid of black pixels
             centroid = None
@@ -304,9 +310,6 @@ class AccumulateOdometry(Node):
                     (0, 255, 255),
                     1,
                 )
-
-            # Highlight detected black pixels in the visualization
-            visualization[black_mask] = [0, 0, 255]  # Red color
 
             text = [
                 f"Distance to target: {self.distance_to_target:.4f}m",
@@ -332,9 +335,10 @@ class AccumulateOdometry(Node):
 
             # Display the depth image with ROI
             self.display_queue.put((topic_name, visualization))
+
             if self.obj_detected > 0 or not self.detect_obstacles:
                 return
-            elif black_percentage > 5:
+            elif detection:
                 self.obj_detected = self.obj_ticks
                 self.obj_x = centroid_x
 
@@ -351,7 +355,7 @@ class AccumulateOdometry(Node):
         twist = Twist()
         twist.linear.x = 0.1  # Move forward slowly
         twist.angular.z = 1.2  # Turn slightly
-        if self.obj_x < 680:
+        if self.obj_x < 640:
             twist.angular.z = -1 * twist.angular.z
         # print(twist.angular.z, self.left_detected, self.right_detected)
         if self.should_move:
