@@ -58,10 +58,10 @@ class AccumulateOdometry(Node):
         # self.targets.append([-2, 2, 0.2])
 
         # # First right
-        # self.targets.append([2, 2.805, 0.1])
+        self.targets.append([2, 2.805, 0.1])
 
         # # First left
-        self.targets.append([-2, 2.805, 0.2])
+        # self.targets.append([-2, 2.805, 0.2])
 
         # Second right
         # self.targets.append([1.15, 3.9, 0.1])

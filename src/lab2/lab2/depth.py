@@ -9,6 +9,7 @@ from queue import Queue
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 import numpy as np
 from sensor_msgs.msg import Image
+from lab2.calibrate import undistort_from_saved_data
 
 
 class Depth_avoidance(Node):
@@ -28,12 +29,13 @@ class Depth_avoidance(Node):
         self.display_thread.start()
 
         # Subscribe to depth camera
-        depth_cameras = ["/rae/right/image_raw"]
+        depth_cameras = ["/rae/stereo_front/image_raw"]
+        self.image = None
         for topic in depth_cameras:
             self.create_subscription(
                 Image,
                 topic,
-                lambda msg, topic_name=topic: self.depth_callback(msg, topic_name),
+                lambda msg, topic_name=topic: self.image_callback(msg, topic_name),
                 qos_profile=QoSProfile(
                     depth=1, reliability=ReliabilityPolicy.BEST_EFFORT
                 ),
@@ -42,6 +44,11 @@ class Depth_avoidance(Node):
         self.publisher_ = self.create_publisher(Point, "/object", 10)
 
         self.bridge = CvBridge()
+
+        # Timer to check for objects
+        self.timer = self.create_timer(
+            timer_period_sec=0.1, callback=self.timer_callback
+        )
 
     def display_frames(self):
         # Thread to handle displaying frames
@@ -55,107 +62,103 @@ class Depth_avoidance(Node):
             except Exception as e:
                 self.get_logger().error(f"Error in display thread: {e}")
 
-    def depth_callback(self, msg, topic_name):
-        try:
-            # Convert ROS Image to OpenCV format
-            image = self.bridge.imgmsg_to_cv2(msg)
-            threshold_up = [90, 30, 35]
-            threshold_down = [5, 3, 3]
-            mask = np.zeros(image.shape[:2], dtype=np.uint8)
-            polygon_points = np.array([self.roi], dtype=np.int32)
-            cv2.fillPoly(mask, polygon_points, 255)
+    def image_callback(self, msg, topic_name):
+        image = self.bridge.imgmsg_to_cv2(msg)
+        # image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        self.image = image
 
-            # Create visualization image
-            visualization = image.copy()
+    def timer_callback(self):
+        threshold_up = [600]
+        threshold_down = [0]
+        if type(self.image) != np.ndarray:
+            return
 
-            # Create black pixel mask by checking each channel
-            black_mask = np.logical_and.reduce(
-                (
-                    (image[:, :, 0] > threshold_down[0])
-                    & (image[:, :, 0] < threshold_up[0]),  # B channel
-                    (image[:, :, 1] > threshold_down[1])
-                    & (image[:, :, 1] < threshold_up[1]),  # G channel
-                    (image[:, :, 2] > threshold_down[2])
-                    & (image[:, :, 2] < threshold_up[2]),  # R channel
-                )
-            )
+        image = self.image.copy()
+        # Create visualization image
+        visualization = image.copy()
+        visualization = (visualization / visualization.max()) * 255
+        visualization = visualization.astype(np.uint8)
+        visualization = cv2.cvtColor(visualization, cv2.COLOR_GRAY2BGR)
+        # self.display_queue.put(("Stereo", image))
 
-            # Combine with polygon mask to only get black pixels inside polygon
-            black_mask = black_mask & (mask > 0)
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        polygon_points = np.array([self.roi], dtype=np.int32)
+        cv2.fillPoly(mask, polygon_points, 255)
+        # Create black pixel mask by checking each channel
+        black_mask = np.logical_and(image > threshold_down[0], image < threshold_up[0])
+        # Combine with polygon mask to only get black pixels inside polygon
+        black_mask = black_mask & (mask > 0)
 
-            # Count black pixels and calculate area
-            black_pixel_count = np.sum(black_mask)
-            polygon_area = np.sum(mask > 0)
+        # Count black pixels and calculate area
+        black_pixel_count = np.sum(black_mask)
+        polygon_area = np.sum(mask > 0)
 
-            # Calculate percentage of black pixels within polygon
-            black_percentage = (
-                (black_pixel_count / polygon_area) * 100 if polygon_area > 0 else 0
-            )
-            detection = black_percentage > self.obj_pct
-            # Highlight detected black pixels in the visualization
-            visualization[black_mask] = [0, 0, 255]  # Red color
+        # Calculate percentage of black pixels within polygon
+        black_percentage = (
+            (black_pixel_count / polygon_area) * 100 if polygon_area > 0 else 0
+        )
+        detection = black_percentage > self.obj_pct
+        # Highlight detected black pixels in the visualization
+        visualization[black_mask] = [0, 0, 255]  # Red color
 
-            cv2.polylines(
+        cv2.polylines(
+            visualization,
+            polygon_points,
+            True,
+            (0, 255, 0) if detection == 0 else (0, 0, 255),
+            2,
+        )
+
+        # Calculate centroid of black pixels
+        centroid = None
+        centroid_x = 1280
+        if np.any(black_mask):
+            y_coords, x_coords = np.where(black_mask)
+            centroid_x = int(np.median(x_coords))
+            centroid_y = int(np.median(y_coords))
+            centroid = (centroid_x, centroid_y)
+
+            # Draw centroid on visualization
+            cv2.circle(visualization, centroid, 5, (0, 255, 255), -1)  # Yellow dot
+            cv2.putText(
                 visualization,
-                polygon_points,
-                True,
-                (0, 255, 0) if detection == 0 else (0, 0, 255),
-                2,
+                f"({centroid_x}, {centroid_y})",
+                (centroid_x + 10, centroid_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 255),
+                1,
             )
 
-            # Calculate centroid of black pixels
-            centroid = None
-            centroid_x = 1280
-            if np.any(black_mask):
-                y_coords, x_coords = np.where(black_mask)
-                centroid_x = int(np.mean(x_coords))
-                centroid_y = int(np.mean(y_coords))
-                centroid = (centroid_x, centroid_y)
+        text = [
+            f"Black_pixels: {black_pixel_count}",
+            f"Black_percentage: {black_percentage}",
+            f"Black_mean: {centroid}",
+        ]
+        text_x, text_y = (0, 10)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        color = (0, 255, 0)  # Green color for the text
+        thickness = 2
+        for i, line in enumerate(text):
+            cv2.putText(
+                visualization,
+                line,
+                (text_x, text_y + i * 25),
+                font,
+                font_scale,
+                color,
+                thickness,
+            )
 
-                # Draw centroid on visualization
-                cv2.circle(visualization, centroid, 5, (0, 255, 255), -1)  # Yellow dot
-                cv2.putText(
-                    visualization,
-                    f"({centroid_x}, {centroid_y})",
-                    (centroid_x + 10, centroid_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 255),
-                    1,
-                )
+        # Display the depth image with ROI
+        self.display_queue.put(("depth", visualization))
 
-            text = [
-                f"Black_pixels: {black_pixel_count}",
-                f"Black_percentage: {black_percentage}",
-                f"Black_mean: {centroid}",
-            ]
-            text_x, text_y = (0, 10)
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.6
-            color = (0, 255, 0)  # Green color for the text
-            thickness = 2
-            for i, line in enumerate(text):
-                cv2.putText(
-                    visualization,
-                    line,
-                    (text_x, text_y + i * 25),
-                    font,
-                    font_scale,
-                    color,
-                    thickness,
-                )
-
-            # Display the depth image with ROI
-            self.display_queue.put((topic_name, visualization))
-
-            msg = Point()
-            msg.x = float(centroid_x)
-            msg.y = float(detection)
-            msg.z = 0.0  # Not used
-            self.publisher_.publish(msg)
-
-        except Exception as e:
-            self.get_logger().error(f"Depth image processing failed: {e}")
+    #     msg = Point()
+    #     msg.x = float(centroid_x)
+    #     msg.y = float(detection)
+    #     msg.z = 0.0  # Not used
+    #     self.publisher_.publish(msg)
 
     def stop_robot(self):
         # Publish zero velocities to stop the robot

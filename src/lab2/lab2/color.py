@@ -8,7 +8,7 @@ import threading
 from queue import Queue
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 import numpy as np
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 
 
 class Color_avoidance(Node):
@@ -28,10 +28,11 @@ class Color_avoidance(Node):
         self.display_thread.start()
 
         # Subscribe to depth camera
-        depth_cameras = ["/rae/right/image_raw"]
+        depth_cameras = ["/rae/right/image_raw/compressed"]
+        # /rae/right/image_raw
         for topic in depth_cameras:
             self.create_subscription(
-                Image,
+                CompressedImage,
                 topic,
                 lambda msg, topic_name=topic: self.depth_callback(msg, topic_name),
                 qos_profile=QoSProfile(
@@ -58,7 +59,7 @@ class Color_avoidance(Node):
     def depth_callback(self, msg, topic_name):
         try:
             # Convert ROS Image to OpenCV format
-            image = self.bridge.imgmsg_to_cv2(msg)
+            image = self.bridge.compressed_imgmsg_to_cv2(msg)
             threshold_up = [90, 30, 35]
             threshold_down = [5, 3, 3]
             mask = np.zeros(image.shape[:2], dtype=np.uint8)
@@ -108,8 +109,8 @@ class Color_avoidance(Node):
             centroid_x = 1280
             if np.any(black_mask):
                 y_coords, x_coords = np.where(black_mask)
-                centroid_x = int(np.mean(x_coords))
-                centroid_y = int(np.mean(y_coords))
+                centroid_x = int(np.median(x_coords))
+                centroid_y = int(np.median(y_coords))
                 centroid = (centroid_x, centroid_y)
 
                 # Draw centroid on visualization

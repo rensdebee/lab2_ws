@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 from geometry_msgs.msg import Twist, PointStamped
 from cv_bridge import CvBridge
 import cv2
@@ -28,8 +28,10 @@ class LAB2(Node):
         self.display_thread.start()
         self.br = CvBridge()
         self.cameras = [
-            "/rae/right/image_raw",
+            "/rae/right/image_raw/compressed",
         ]
+
+        # /rae/right/image_raw
         self.frames = [None] * len(self.cameras)
         self.scale_factor = 2
 
@@ -66,7 +68,7 @@ class LAB2(Node):
 
         for topic in self.cameras:
             self.create_subscription(
-                Image,
+                CompressedImage,
                 topic,
                 lambda msg, topic_name=topic: self.image_callback(msg, topic_name),
                 qos_profile=QoSProfile(
@@ -91,7 +93,7 @@ class LAB2(Node):
 
     def image_callback(self, data, topic_name):
         # Convert ROS Image message to OpenCV image
-        current_frame = self.br.imgmsg_to_cv2(data)
+        current_frame = self.br.compressed_imgmsg_to_cv2(data)
 
         idx = self.cameras.index(topic_name)
         self.frames[idx] = current_frame
@@ -141,9 +143,9 @@ class LAB2(Node):
                 corners, ids, "seven", cam_id, current_frame
             )
 
-        (corners, ids, _) = self.h12_detector.detectMarkers(current_frame)
-        if ids is not None:
-            point_list += self.filter_points(corners, ids, "h12", cam_id, current_frame)
+        # (corners, ids, _) = self.h12_detector.detectMarkers(current_frame)
+        # if ids is not None:
+        #     point_list += self.filter_points(corners, ids, "h12", cam_id, current_frame)
 
         self.display_queue.put((cam_id, current_frame))
         return point_list
