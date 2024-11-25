@@ -15,6 +15,7 @@ from filterpy.kalman import KalmanFilter
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 import numpy as np
 from lab2.utils import UTILS
+from time import sleep
 
 
 class AccumulateOdometry(Node):
@@ -26,7 +27,7 @@ class AccumulateOdometry(Node):
         # Use markers to relocalize
         self.use_markers = True
         # Try to avoid obstacle
-        self.detect_obstacles = True
+        self.detect_obstacles = False
 
         # Log position to terminal
         self.print_pos = False
@@ -57,13 +58,13 @@ class AccumulateOdometry(Node):
         # self.targets.append([-2, 2, 0.2])
 
         # # First right
-        self.targets.append([0, 0.2, 0.05])
+        self.targets.append([2, 2.805, 0.1])
 
         # # First left
         # self.targets.append([-2, 2.805, 0.2])
 
         # Second right
-        # self.targets.append([1.15, 3.9, 0.2])
+        # self.targets.append([1.15, 3.9, 0.1])
 
         # # Second left
         # self.targets.append([-1.15, 3.9, 0.2])
@@ -131,9 +132,9 @@ class AccumulateOdometry(Node):
         # State covariance matrix (P)
         self.kf.P = np.eye(2) * 1.0  # Initial uncertainty
         # Measurement uncertainty for odometry
-        self.R_odom = np.eye(2) * 0.1  # Higher uncertainty for odometry
+        self.R_odom = np.eye(2) * 0.2  # Higher uncertainty for odometry
         # Measurement uncertainty for marker
-        self.R_marker = np.eye(2) * 0.2  # Lower uncertainty for marker
+        self.R_marker = np.eye(2) * 0.13  # Lower uncertainty for marker
 
         # Subscribe to depth camera
         depth_cameras = ["/rae/right/image_raw"]
@@ -164,7 +165,7 @@ class AccumulateOdometry(Node):
         self.path = Path()
         self.path.header.frame_id = "odom"
 
-        self.utils.set_leds("#000000")
+        self.utils.set_leds("#FF00FF")
 
         self.get_logger().info("Accumulated Odometry Node Initialized")
 
@@ -194,7 +195,10 @@ class AccumulateOdometry(Node):
             self.targets.pop(0)
             # If no more targets left stop robot
             if len(self.targets) == 0:
+                self.utils.set_leds("#00FF00")
                 self.stop_robot()
+                self.utils.set_leds("#00FF00")
+                sleep(3)
                 exit()
                 return
             # else set new target
@@ -212,7 +216,7 @@ class AccumulateOdometry(Node):
         if self.obj_detected > 0 and self.detect_obstacles:
             self.avoid_obstacle()
             return
-        self.utils.set_leds("#000000")
+        self.utils.set_leds("#FF00FF")
 
         # Compute the angle difference
         target_angle = math.atan2(delta_x, delta_y) % (2 * math.pi)
@@ -241,8 +245,8 @@ class AccumulateOdometry(Node):
         try:
             # Convert ROS Image to OpenCV format
             image = self.bridge.imgmsg_to_cv2(msg)
-            threshold_up = [30, 30, 30]
-            threshold_down = [0, 0, 0]
+            threshold_up = [45, 45, 35]
+            threshold_down = [5, 3, 3]
             mask = np.zeros(image.shape[:2], dtype=np.uint8)
             polygon_points = np.array([self.roi], dtype=np.int32)
             cv2.fillPoly(mask, polygon_points, 255)
@@ -370,14 +374,13 @@ class AccumulateOdometry(Node):
         return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
 
     def marker_callback(self, msg):
-        # delta_x = self.target_x - self.x
-        # delta_y = self.target_y - self.y
-        # distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
-        # or distance_to_target > 2.5
         if not self.use_markers:
             return
         x = msg.point.x
         y = msg.point.y
+        error = np.sqrt((self.x - x) ** 2 + (self.y - y) ** 2)
+        if error > 2:
+            return
 
         # if self.kalman_filter:
         #     ##apply kalman filter on the localization data
@@ -496,11 +499,11 @@ class AccumulateOdometry(Node):
 
     def stop_robot(self):
         # Publish zero velocities to stop the robot
+        self.utils.set_leds("#00FF00")
         twist = Twist()
         twist.linear.x = 0.0
         twist.angular.z = 0.0
         self.move_publisher.publish(twist)
-        self.utils.set_leds("#00FF00")
         self.utils.draw_text(f"Shut down")
 
 

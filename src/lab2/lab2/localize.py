@@ -19,7 +19,7 @@ class LAB2(Node):
     def __init__(self):
         self.find_markers = True
         self.check_in_field = True
-        self.dist_error = 15
+        self.dist_error = np.inf
 
         super().__init__("lab_2")
         self.utils = UTILS(self)
@@ -106,8 +106,8 @@ class LAB2(Node):
 
         # Extract the latest pose
         latest_pose = msg.poses[-1].pose  # Last pose in the path
-        self.x = latest_pose.position.x
-        self.y = latest_pose.position.y
+        self.x = latest_pose.position.x * 100
+        self.y = latest_pose.position.y * 100
 
         # # Log the coordinates
         self.get_logger().info(f"Latest coordinates: x={self.x}, y={self.y}")
@@ -189,8 +189,8 @@ class LAB2(Node):
             "distance_angle": (math.cos(r_vec[0][0]) * t_vec[2][0]),
             "distance": np.sqrt(
                 abs(
-                (np.linalg.norm(t_vec)) ** 2
-                - (self.location_dict[tag_family][id][0][2]) ** 2
+                    (np.linalg.norm(t_vec)) ** 2
+                    - (self.location_dict[tag_family][id][0][2]) ** 2
                 )
             ),
         }
@@ -202,7 +202,7 @@ class LAB2(Node):
             predicted_dist = np.sqrt(
                 (self.x - marker_x) ** 2 + (self.y - marker_y) ** 2
             )
-
+        dist_error = abs(predicted_dist - distance)
         if current_frame is not None:
             tvec_text = (
                 f"x:{t_vec[0][0]:.2f} , y:{t_vec[1][0]:.2f} z:{t_vec[2][0]:.2f} cm"
@@ -212,7 +212,7 @@ class LAB2(Node):
             text_position = tuple(old_corner[0][0].ravel().astype(int))
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 0.6
-            color = (0, 255, 0) if predicted_dist < self.dist_error else (0, 0, 255)
+            color = (0, 255, 0) if dist_error < self.dist_error else (0, 0, 255)
             thickness = 2
 
             # Put the text on the image
@@ -225,7 +225,7 @@ class LAB2(Node):
                 color,
                 thickness,
             )
-        if predicted_dist > self.dist_error:
+        if dist_error > self.dist_error:
             return None
         else:
             return self.location_dict[tag_family][id][0][:2] + [distance]
@@ -286,7 +286,7 @@ class LAB2(Node):
             return np.linalg.norm(markers - position, axis=1) - distances
 
         # Use least squares to minimize the residuals
-        result = least_squares(residuals, (0,0), args=(markers, distances))
+        result = least_squares(residuals, (0, 0), args=(markers, distances))
 
         # Estimated position
         loc = result.x
