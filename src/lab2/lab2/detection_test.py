@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import copy
 
 calibration_npzs = [
+    # "./calibration_data_hd_5coeff.npz",
     "./calibration_data_hd.npz",
     "./calibration_data.npz",
     "./calibration_data_back.npz",
@@ -38,7 +39,7 @@ arucoParams.adaptiveThreshWinSizeStep = 3
 # This is supposed to increase the max error to the approximated square shape. With a higher ratio increase the error in pixels that is allowed.
 # Strangely the range of 0.05-0.1 seems te work best after which we lose detection accuracy again. not sure why tho...
 # TODO maybe keep at 0.03 -> otherwise you get id=57 false positive, or we can remove this one from our filtered list ?
-arucoParams.polygonalApproxAccuracyRate = 0.04
+arucoParams.polygonalApproxAccuracyRate = 0.03
 # Keep this 0.001 as it expresses the min distance between corners of detected markers
 arucoParams.minCornerDistanceRate = 0.001
 # Mininmal distance from a corner of a marker to the border of the image (to handle occlusions.) -> set to one pixel
@@ -50,7 +51,7 @@ arucoParams.minCornerDistanceRate = 0.001
 arucoParams.perspectiveRemovePixelPerCell = 8
 # The amount of each grid that when reconstructing for the perspective that counts for the tag identification
 # TODO THIS ONE IS REAALLY GOOOD
-arucoParams.perspectiveRemoveIgnoredMarginPerCell = 0.2
+arucoParams.perspectiveRemoveIgnoredMarginPerCell = 0.1
 
 
 #TODO MARKER IDENTIFICATION
@@ -78,9 +79,7 @@ h11_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_MIP_36h12)
 h12_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
 
-
 arucoParams.perspectiveRemovePixelPerCell = 9
-
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_7X7_100)
 seven_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
 
@@ -292,7 +291,6 @@ def trilateration(points, true_x, true_y):
 
     # Known positions of markers (x, y coordinates)
     markers = points[:, 1:3]  # Add as many markers as needed
-    print(markers)
 
     # Measured distances to each marker
     distances = points[:, 7]
@@ -302,8 +300,7 @@ def trilateration(points, true_x, true_y):
         return np.linalg.norm(markers - position, axis=1) - distances
 
     # Initial guess for the position
-    initial_guess = np.mean(markers, axis=0)
-    print(f"INITIAL GUESS: {initial_guess}")
+    # initial_guess = (true_x, true_y)
 
     # Use least squares to minimize the residuals
     result = least_squares(residuals, (0,0), args=(markers, distances))
@@ -334,7 +331,6 @@ def trilateration(points, true_x, true_y):
 
     # Solve using least-squares method
     intersection, residuals, _, _ = np.linalg.lstsq(A, b, rcond=None)
-    print(intersection, type(intersection))
 
     # _________________________________________________
     # non Linear way
@@ -362,15 +358,15 @@ def trilateration(points, true_x, true_y):
         plot_list.append({"center": (x, y), "radius": r})
     
     # Perform trilateration
-    mean = 0
-    std_dev = 5
-    guess_x = true_x + np.random.normal(mean, std_dev)
-    guess_y = true_y + np.random.normal(mean, std_dev)
-    guess_radius = 5
+    # mean = 0
+    # std_dev = 5
+    # guess_x = true_x + np.random.normal(mean, std_dev)
+    # guess_y = true_y + np.random.normal(mean, std_dev)
+    # guess_radius = 5
 
-    print(f"guess x and y : {guess_x}, {guess_y}")
+    # print(f"guess x and y : {guess_x}, {guess_y}")
 
-    easy_result, meta = easy_least_squares(circle_list, guess=Circle(guess_x, guess_y, guess_radius))  
+    easy_result, meta = easy_least_squares(circle_list, guess=Circle(0, 0, 0))  
 
     # TODO PLOTTTING
     # from matplotlib.patches import Circle as Birble
@@ -464,7 +460,7 @@ def locate(point_list, true_x, true_y):
                   new way intersection: {intersection}, 
                   old way location: {loc}""")
             print(f"""
-                nonlin way loc: {result}
+                old way location: {loc}
                 """)
             return loc
 
@@ -565,6 +561,11 @@ if __name__ == "__main__":
         point_list, current_frame = detect_makers(cam_id=cam_id, current_frame=current_frame)
 
         print("---------")
+
+        
+        # # USE ONLY bilateration
+        # error_2d_list =[]
+
         for point in copy.deepcopy(point_list):
             id = point[0]
             marker_x = point[1]
@@ -592,15 +593,26 @@ if __name__ == "__main__":
             if error_2d_down_proj > 15:
                 point_list.remove(point)
                 print(f"REMOVED POINT: {id}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                
+
+            
+            # # USE ONLY bilateration  
+            # # Test only bilateration
+            # error_2d_list.append(error_2d_down_proj)
+
             print("XXXXXX")
 
-
-
+        # # USE ONLY bilateration
+        # if len(point_list) > 2:
+        #     print(point_list)
+        #     sorted_pairs = sorted(zip(point_list, error_2d_list), key=lambda x: x[1], reverse=False)
+        #     print(sorted_pairs[0][0])
+        #     print(sorted_pairs[1][0])
+        #     point_list = [sorted_pairs[0][0]] + [sorted_pairs[1][0]]
+        #     print(point_list)
 
         # Localization
         print("@@@@")
-        if len(point_list) == 2:      
+        if len(point_list) == 2:    
             loc = locate(point_list, true_robo_x, true_robo_y)
             # Calculate localization error
             loc_error = math.sqrt( (loc[0] - true_robo_x) ** 2 + (loc[1] - true_robo_y) ** 2)
@@ -633,7 +645,7 @@ if __name__ == "__main__":
         # exit()
 
     # Mean localization error
-    print(f"The mean 3points+ localization error was: {np.mean(loc_error_list)}")
+    print(f"The mean localization error was: {np.mean(loc_error_list)}")
     ############################## DDD
 
 
