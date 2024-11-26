@@ -11,11 +11,27 @@ import numpy as np
 from sensor_msgs.msg import Image, CompressedImage
 from lab2.calibrate import undistort_from_saved_data
 
+# neural depth model
+import torch
+import torch.nn as nn
+import torch.utils.data
+import torch.nn.parallel
+import torchvision.transforms as transforms
+from PIL import Image
+from models import Fast_ACVNet_plus
+
 
 class Depth_avoidance(Node):
     def __init__(self):
         super().__init__("accumulate_odometry")
         self.obj_pct = 2.75
+
+        # Load the model
+        self.model = Fast_ACVNet_plus(192, False)
+        self.model = nn.DataParallel(self.model, device_ids=[0])
+        state_dict = torch.load("./trained_models/kitti_2015.ckpt")
+        self.model.load_state_dict(state_dict['model'])
+        self.model.eval()
 
         # ROI for object avoidance
         self.roi = np.array(
@@ -60,6 +76,57 @@ class Depth_avoidance(Node):
             timer_period_sec=0.1, callback=self.timer_callback
         )
 
+    def tensor2numpy(self, vars):
+        if isinstance(vars, np.ndarray):
+            return vars
+        elif isinstance(vars, torch.Tensor):
+            return vars.data.cpu().numpy()
+        else:
+            raise NotImplementedError("invalid input type for tensor2numpy")
+
+    def get_transform(self):
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+
+        return transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std),
+        ])
+
+    def load_image(self, filename):
+        return Image.open(filename).convert('RGB')
+
+    def pre_process_image(self, left_image, right_image):
+        left_img = self.load_image(left_image)
+        right_img = self.load_image(right_image)
+        w, h = left_img.size
+
+        processed = self.get_transform()
+        left_img = processed(left_img).numpy()
+        right_img = processed(right_img).numpy()
+
+        # pad to size 1248x384 if needed
+        top_pad = 384 - h
+        right_pad = 1248 - w
+        if top_pad <= 0 and right_pad <= 0:
+            return torch.from_numpy(left_img).unsqueeze(0), torch.from_numpy(right_img).unsqueeze(0)
+        # pad images
+        else: 
+            left_img = np.lib.pad(left_img, ((0, 0), (top_pad, 0), (0, right_pad)), mode='constant', constant_values=0)
+            right_img = np.lib.pad(right_img, ((0, 0), (top_pad, 0), (0, right_pad)), mode='constant',
+                                constant_values=0)
+            return torch.from_numpy(left_img).unsqueeze(0), torch.from_numpy(right_img).unsqueeze(0)
+
+    def estimate(self, left_image, right_image):
+        left_img, right_img = self.pre_process_image(left_image, right_image)
+        self.model.eval()
+        print("type of left_img:{}".format(type(left_img)))
+        disp_ests = self.model(left_img, right_img)
+        print("type of disp_ests:{}".format(type(disp_ests)))
+        disparity_map = self.tensor2numpy(disp_ests[-1])
+        disparity_map = np.squeeze(disparity_map)
+        return disparity_map
+
     def display_frames(self):
         # Thread to handle displaying frames
         while True:
@@ -85,7 +152,10 @@ class Depth_avoidance(Node):
 
         left_image = self.left_image.copy()
         right_image = self.right_image.copy()
-        self.display_queue.put(("cam", left_image))
+
+        disp_img = self.estimate(left_image, right_image)
+
+        self.display_queue.put(("cam", disp_img))
         if self.frame % 10 == 0:
             print("saving")
             cv2.imwrite(f"depth/left_{self.frame}.png", left_image)
