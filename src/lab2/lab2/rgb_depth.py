@@ -17,8 +17,8 @@ import torch.nn as nn
 import torch.utils.data
 import torch.nn.parallel
 import torchvision.transforms as transforms
-from PIL import Image
-from models import Fast_ACVNet_plus
+from PIL import Image as PilImage
+from lab2.models import Fast_ACVNet_plus
 
 
 class Depth_avoidance(Node):
@@ -29,8 +29,8 @@ class Depth_avoidance(Node):
         # Load the model
         self.model = Fast_ACVNet_plus(192, False)
         self.model = nn.DataParallel(self.model, device_ids=[0])
-        state_dict = torch.load("./trained_models/kitti_2015.ckpt")
-        self.model.load_state_dict(state_dict['model'])
+        state_dict = torch.load("./src/lab2/lab2/trained_models/kitti_2015.ckpt")
+        self.model.load_state_dict(state_dict["model"])
         self.model.eval()
 
         # ROI for object avoidance
@@ -73,7 +73,7 @@ class Depth_avoidance(Node):
 
         # Timer to check for objects
         self.timer = self.create_timer(
-            timer_period_sec=0.1, callback=self.timer_callback
+            timer_period_sec=0.06, callback=self.timer_callback
         )
 
     def tensor2numpy(self, vars):
@@ -88,17 +88,16 @@ class Depth_avoidance(Node):
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
 
-        return transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std),
-        ])
-
-    def load_image(self, filename):
-        return Image.open(filename).convert('RGB')
+        return transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std),
+            ]
+        )
 
     def pre_process_image(self, left_image, right_image):
-        left_img = self.load_image(left_image)
-        right_img = self.load_image(right_image)
+        left_img = left_image
+        right_img = right_image
         w, h = left_img.size
 
         processed = self.get_transform()
@@ -109,13 +108,26 @@ class Depth_avoidance(Node):
         top_pad = 384 - h
         right_pad = 1248 - w
         if top_pad <= 0 and right_pad <= 0:
-            return torch.from_numpy(left_img).unsqueeze(0), torch.from_numpy(right_img).unsqueeze(0)
+            return torch.from_numpy(left_img).unsqueeze(0), torch.from_numpy(
+                right_img
+            ).unsqueeze(0)
         # pad images
-        else: 
-            left_img = np.lib.pad(left_img, ((0, 0), (top_pad, 0), (0, right_pad)), mode='constant', constant_values=0)
-            right_img = np.lib.pad(right_img, ((0, 0), (top_pad, 0), (0, right_pad)), mode='constant',
-                                constant_values=0)
-            return torch.from_numpy(left_img).unsqueeze(0), torch.from_numpy(right_img).unsqueeze(0)
+        else:
+            left_img = np.lib.pad(
+                left_img,
+                ((0, 0), (top_pad, 0), (0, right_pad)),
+                mode="constant",
+                constant_values=0,
+            )
+            right_img = np.lib.pad(
+                right_img,
+                ((0, 0), (top_pad, 0), (0, right_pad)),
+                mode="constant",
+                constant_values=0,
+            )
+            return torch.from_numpy(left_img).unsqueeze(0), torch.from_numpy(
+                right_img
+            ).unsqueeze(0)
 
     def estimate(self, left_image, right_image):
         left_img, right_img = self.pre_process_image(left_image, right_image)
@@ -142,26 +154,35 @@ class Depth_avoidance(Node):
     def image_callback(self, msg, topic_name):
         image = self.bridge.compressed_imgmsg_to_cv2(msg)
         if "left" in topic_name:
+            image = undistort_from_saved_data(self.depth_npz[1], image)
             self.left_image = image
         elif "right" in topic_name:
+            image = undistort_from_saved_data(self.depth_npz[0], image)
             self.right_image = image
 
     def timer_callback(self):
         if type(self.left_image) != np.ndarray or type(self.right_image) != np.ndarray:
             return
 
+        # left_image = cv2.resize(self.left_image.copy(), (1248, 384))
+        # right_image = cv2.resize(self.right_image.copy(), (1248, 384))
         left_image = self.left_image.copy()
         right_image = self.right_image.copy()
-
-        disp_img = self.estimate(left_image, right_image)
+        left_image = cv2.cvtColor(left_image, cv2.COLOR_BGR2RGB)
+        left_image = PilImage.fromarray(left_image)
+        right_image = cv2.cvtColor(right_image, cv2.COLOR_BGR2RGB)
+        right_image = PilImage.fromarray(right_image)
+        with torch.no_grad():
+            disp_img = self.estimate(left_image, right_image)
+        disp_img = disp_img.astype(np.uint8)
 
         self.display_queue.put(("cam", disp_img))
-        if self.frame % 10 == 0:
-            print("saving")
-            cv2.imwrite(f"depth/left_{self.frame}.png", left_image)
-            cv2.imwrite(f"depth/right_{self.frame}.png", right_image)
+        # if self.frame % 10 == 0:
+        #     print("saving")
+        #     cv2.imwrite(f"depth/left_{self.frame}.png", left_image)
+        #     cv2.imwrite(f"depth/right_{self.frame}.png", right_image)
 
-        self.frame += 1
+        # self.frame += 1
 
     #     msg = Point()
     #     msg.x = float(centroid_x)

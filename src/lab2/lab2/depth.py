@@ -68,7 +68,7 @@ class Depth_avoidance(Node):
         self.image = image
 
     def timer_callback(self):
-        threshold_up = [600]
+        threshold_up = [462]
         threshold_down = [0]
         if type(self.image) != np.ndarray:
             return

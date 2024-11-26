@@ -37,6 +37,8 @@ class AccumulateOdometry(Node):
         self.kalman_filter = True
         # Avoid obstacle for x amount of clock ticks
         self.obj_ticks = 8
+        # If object x is below this number avoid by going to the right
+        self.x_right = 640
 
         # Gain for driving
         self.angular_gain = 2.5
@@ -70,7 +72,7 @@ class AccumulateOdometry(Node):
         # self.targets.append([-1.15, 3.9, 0.2])
 
         # # Middle
-        # self.targets.append([0, 3.2, 0.2])
+        # self.targets.append([0, 3.2, 0.15])
 
         # Target info
         self.target_x = self.targets[0][0]
@@ -247,7 +249,7 @@ class AccumulateOdometry(Node):
         twist = Twist()
         twist.linear.x = 0.1  # Move forward slowly
         twist.angular.z = 1.2  # Turn slightly
-        if self.obj_x < 640:
+        if self.obj_x < self.x_right:
             twist.angular.z = -1 * twist.angular.z
         # print(twist.angular.z, self.left_detected, self.right_detected)
         if self.should_move:

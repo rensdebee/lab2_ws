@@ -77,7 +77,7 @@ class LAB2(Node):
             )
 
         self.timer = self.create_timer(
-            timer_period_sec=0.1, callback=self.timer_callback
+            timer_period_sec=0.2, callback=self.timer_callback
         )
 
         self.publisher_ = self.create_publisher(PointStamped, "/marker_loc", 10)
