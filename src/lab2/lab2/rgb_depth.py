@@ -19,6 +19,7 @@ import torch.nn.parallel
 import torchvision.transforms as transforms
 from PIL import Image as PilImage
 from lab2.models import Fast_ACVNet_plus
+from lab2.models import BGNet_Plus
 
 
 class Depth_avoidance(Node):
@@ -27,11 +28,12 @@ class Depth_avoidance(Node):
         self.obj_pct = 2.75
 
         # Load the model
-        self.model = Fast_ACVNet_plus(192, False)
-        self.model = nn.DataParallel(self.model, device_ids=[0])
-        state_dict = torch.load("./src/lab2/lab2/trained_models/kitti_2015.ckpt")
-        self.model.load_state_dict(state_dict["model"])
-        self.model.eval()
+        self.device = torch.device("cuda")
+        BGNET_PLUS_MODEL_PATH = './src/lab2/lab2/trained_models/kitti_15_BGNet_plus.pth'
+        model = BGNet_Plus().to(self.device)
+        checkpoint = torch.load(BGNET_PLUS_MODEL_PATH, map_location=lambda storage, loc: storage)
+        model.load_state_dict(checkpoint)
+        model.eval()
 
         # ROI for object avoidance
         self.roi = np.array(
@@ -76,68 +78,39 @@ class Depth_avoidance(Node):
             timer_period_sec=0.06, callback=self.timer_callback
         )
 
-    def tensor2numpy(self, vars):
-        if isinstance(vars, np.ndarray):
-            return vars
-        elif isinstance(vars, torch.Tensor):
-            return vars.data.cpu().numpy()
-        else:
-            raise NotImplementedError("invalid input type for tensor2numpy")
-
     def get_transform(self):
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
+        t_list = [
+            transforms.ToTensor(),
+        ]
+        return transforms.Compose(t_list)
 
-        return transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize(mean=mean, std=std),
-            ]
-        )
-
-    def pre_process_image(self, left_image, right_image):
-        left_img = left_image
-        right_img = right_image
+    def load_image(self, left_image, right_image):
+        left_img = PilImage.fromarray(left_image).convert('L')
+        right_img = PilImage.fromarray(right_image).convert('L')
         w, h = left_img.size
-
-        processed = self.get_transform()
-        left_img = processed(left_img).numpy()
-        right_img = processed(right_img).numpy()
-
-        # pad to size 1248x384 if needed
-        top_pad = 384 - h
-        right_pad = 1248 - w
-        if top_pad <= 0 and right_pad <= 0:
-            return torch.from_numpy(left_img).unsqueeze(0), torch.from_numpy(
-                right_img
-            ).unsqueeze(0)
-        # pad images
-        else:
-            left_img = np.lib.pad(
-                left_img,
-                ((0, 0), (top_pad, 0), (0, right_pad)),
-                mode="constant",
-                constant_values=0,
-            )
-            right_img = np.lib.pad(
-                right_img,
-                ((0, 0), (top_pad, 0), (0, right_pad)),
-                mode="constant",
-                constant_values=0,
-            )
-            return torch.from_numpy(left_img).unsqueeze(0), torch.from_numpy(
-                right_img
-            ).unsqueeze(0)
+        h1 = h % 64
+        w1 = w % 64
+        h1 = h - h1
+        w1 = w - w1
+        h1 = int(h1)
+        w1 = int(w1)
+        left_img = left_img.resize((w1, h1), Image.Resampling.LANCZOS)
+        right_img = right_img.resize((w1, h1), Image.Resampling.LANCZOS)
+        left_img = np.ascontiguousarray(left_img, dtype=np.float32)
+        right_img = np.ascontiguousarray(right_img, dtype=np.float32)
+        preprocess = self.get_transform()
+        left_img = preprocess(left_img)
+        right_img = preprocess(right_img)
+        return left_img, right_img
 
     def estimate(self, left_image, right_image):
-        left_img, right_img = self.pre_process_image(left_image, right_image)
+        left_img, right_img = self.load_image(left_image, right_image)
         self.model.eval()
-        print("type of left_img:{}".format(type(left_img)))
-        disp_ests = self.model(left_img, right_img)
-        print("type of disp_ests:{}".format(type(disp_ests)))
-        disparity_map = self.tensor2numpy(disp_ests[-1])
-        disparity_map = np.squeeze(disparity_map)
-        return disparity_map
+
+        pred, _ = self.model(left_img.unsqueeze(0).to(self.device), right_img.unsqueeze(0).to(self.device))
+        pred = pred[0].data.cpu().numpy()
+        return pred
+
 
     def display_frames(self):
         # Thread to handle displaying frames
@@ -168,10 +141,11 @@ class Depth_avoidance(Node):
         # right_image = cv2.resize(self.right_image.copy(), (1248, 384))
         left_image = self.left_image.copy()
         right_image = self.right_image.copy()
+
+
         left_image = cv2.cvtColor(left_image, cv2.COLOR_BGR2RGB)
-        left_image = PilImage.fromarray(left_image)
         right_image = cv2.cvtColor(right_image, cv2.COLOR_BGR2RGB)
-        right_image = PilImage.fromarray(right_image)
+
         with torch.no_grad():
             disp_img = self.estimate(left_image, right_image)
         disp_img = disp_img.astype(np.uint8)
