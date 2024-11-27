@@ -36,7 +36,7 @@ class AccumulateOdometry(Node):
         # Combine marker using kalman filter
         self.kalman_filter = True
         # Avoid obstacle for x amount of clock ticks
-        self.obj_ticks = 8
+        self.obj_ticks = 10
         # If object x is below this number avoid by going to the right
         self.x_right = 640
 
@@ -58,22 +58,22 @@ class AccumulateOdometry(Node):
 
         # Add target [X, Y, error radius]
         # Avoid
-        # self.targets.append([2.2, 2.95, 0.2])
-
-        # # First right
-        # self.targets.append([2, 2.805, 0.1])
-
-        # # First left
-        # self.targets.append([-2, 2.805, 0.1])
-
-        # Second right
-        self.targets.append([1.15, 3.9, 0.15])
-
-        # # Second left
-        # self.targets.append([-1.15, 3.9, 0.15])
+        self.targets.append([1.1, 3.2, 0.2])
 
         # # Middle
         # self.targets.append([0, 3.2, 0.1])
+
+        # Second right
+        # self.targets.append([1.15, 3.9, 0.15])
+
+        # # Second left
+        # self.targets.append([-1.15, 3.9, 0.1])
+
+        # # First right
+        self.targets.append([2, 2.805, 0.15])
+
+        # # First left
+        # self.targets.append([-2, 2.805, 0.1])
 
         # Target info
         self.target_x = self.targets[0][0]

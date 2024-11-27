@@ -329,15 +329,17 @@ class LAB2(Node):
             return None
         if self.check_in_field == False:
             return loc[0]
+        in_field = []
         for xy in loc:
-            in_field = []
             x = xy[0]
             y = xy[1]
             if (-450 < y < 450) and (-300 < x < 300):
                 in_field.append([x, y])
-            if len(in_field) == 1:
-                return in_field[0]
-            else:
+        if len(in_field) == 1:
+            return in_field[0]
+        else:
+            print("two points in field")
+            if self.x is not None:
                 smalles_dist = np.inf
                 true_xy = None
                 for xy in in_field:
@@ -348,7 +350,8 @@ class LAB2(Node):
                         smalles_dist = dist
                         true_xy = xy
                 return true_xy
-        return None
+            else:
+                return None
 
     def procces_frame(self, cam_id):
         point_list = []
