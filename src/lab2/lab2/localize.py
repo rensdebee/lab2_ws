@@ -77,7 +77,7 @@ class LAB2(Node):
             )
 
         self.timer = self.create_timer(
-            timer_period_sec=0.2, callback=self.timer_callback
+            timer_period_sec=0.1, callback=self.timer_callback
         )
 
         self.publisher_ = self.create_publisher(PointStamped, "/marker_loc", 10)
@@ -143,9 +143,9 @@ class LAB2(Node):
                 corners, ids, "seven", cam_id, current_frame
             )
 
-        # (corners, ids, _) = self.h12_detector.detectMarkers(current_frame)
-        # if ids is not None:
-        #     point_list += self.filter_points(corners, ids, "h12", cam_id, current_frame)
+        (corners, ids, _) = self.h12_detector.detectMarkers(current_frame)
+        if ids is not None:
+            point_list += self.filter_points(corners, ids, "h12", cam_id, current_frame)
 
         self.display_queue.put((cam_id, current_frame))
         return point_list
@@ -330,10 +330,24 @@ class LAB2(Node):
         if self.check_in_field == False:
             return loc[0]
         for xy in loc:
+            in_field = []
             x = xy[0]
             y = xy[1]
             if (-450 < y < 450) and (-300 < x < 300):
-                return [x, y]
+                in_field.append([x, y])
+            if len(in_field) == 1:
+                return in_field[0]
+            else:
+                smalles_dist = np.inf
+                true_xy = None
+                for xy in in_field:
+                    x = xy[0]
+                    y = xy[1]
+                    dist = np.sqrt((self.x - x) ** 2 + (self.y - y) ** 2)
+                    if dist < smalles_dist:
+                        smalles_dist = dist
+                        true_xy = xy
+                return true_xy
         return None
 
     def procces_frame(self, cam_id):

@@ -18,7 +18,7 @@ class Color_avoidance(Node):
 
         # ROI for object avoidance
         self.roi = np.array(
-            [[(1280, 670), (0, 670), (0, 800), (1280, 800)]],
+            [[(1280, 580), (600, 650), (0, 580), (0, 800), (1280, 800)]],
             dtype=np.int32,
         )
 
@@ -60,8 +60,8 @@ class Color_avoidance(Node):
         try:
             # Convert ROS Image to OpenCV format
             image = self.bridge.compressed_imgmsg_to_cv2(msg)
-            threshold_up = [90, 30, 35]
-            threshold_down = [5, 3, 3]
+            threshold_up = [90, 35, 60]
+            threshold_down = [0, 0, 0]
             mask = np.zeros(image.shape[:2], dtype=np.uint8)
             polygon_points = np.array([self.roi], dtype=np.int32)
             cv2.fillPoly(mask, polygon_points, 255)
@@ -84,17 +84,43 @@ class Color_avoidance(Node):
             # Combine with polygon mask to only get black pixels inside polygon
             black_mask = black_mask & (mask > 0)
 
-            # Count black pixels and calculate area
-            black_pixel_count = np.sum(black_mask)
-            polygon_area = np.sum(mask > 0)
-
-            # Calculate percentage of black pixels within polygon
-            black_percentage = (
-                (black_pixel_count / polygon_area) * 100 if polygon_area > 0 else 0
-            )
-            detection = black_percentage > self.obj_pct
-            # Highlight detected black pixels in the visualization
+            binary_image = (black_mask * 255).astype("uint8")
+            # # Highlight detected black pixels in the visualization
             visualization[black_mask] = [0, 0, 255]  # Red color
+
+            # Find contours
+            contours, hierarchy = cv2.findContours(
+                binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            # Filter and store significant contours
+            filterd_contours = []
+            highest_y = 0
+            lowest_countour = None
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                x, y, w, h = cv2.boundingRect(contour)
+                M = cv2.moments(contour)
+                aspect_ratio = w / h if h != 0 else 0
+                print(area, aspect_ratio)
+                cv2.drawContours(visualization, [contour], -1, (255, 0, 0), 2)
+                if area > 5500 and aspect_ratio > 1.5 and M["m00"] != 0:
+                    cv2.rectangle(visualization, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    filterd_contours.append((contours))
+                    if y + h > highest_y:
+                        highest_y = y + h
+                        lowest_countour = [contour, (cx, cy), (x, y, w, h)]
+
+            detection = False
+            centroid_x = 0
+            if lowest_countour is not None:
+                if highest_y > 720:
+                    detection = True
+                cx, cy = lowest_countour[1]
+                centroid_x = cx
+                cv2.circle(visualization, (cx, cy), 5, (255, 255, 255), -1)
 
             cv2.polylines(
                 visualization,
@@ -103,48 +129,6 @@ class Color_avoidance(Node):
                 (0, 255, 0) if detection == 0 else (0, 0, 255),
                 2,
             )
-
-            # Calculate centroid of black pixels
-            centroid = None
-            centroid_x = 1280
-            if np.any(black_mask):
-                y_coords, x_coords = np.where(black_mask)
-                centroid_x = int(np.median(x_coords))
-                centroid_y = int(np.median(y_coords))
-                centroid = (centroid_x, centroid_y)
-
-                # Draw centroid on visualization
-                cv2.circle(visualization, centroid, 5, (0, 255, 255), -1)  # Yellow dot
-                cv2.putText(
-                    visualization,
-                    f"({centroid_x}, {centroid_y})",
-                    (centroid_x + 10, centroid_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 255),
-                    1,
-                )
-
-            text = [
-                f"Black_pixels: {black_pixel_count}",
-                f"Black_percentage: {black_percentage}",
-                f"Black_mean: {centroid}",
-            ]
-            text_x, text_y = (0, 10)
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.6
-            color = (0, 255, 0)  # Green color for the text
-            thickness = 2
-            for i, line in enumerate(text):
-                cv2.putText(
-                    visualization,
-                    line,
-                    (text_x, text_y + i * 25),
-                    font,
-                    font_scale,
-                    color,
-                    thickness,
-                )
 
             # Display the depth image with ROI
             self.display_queue.put((topic_name, visualization))

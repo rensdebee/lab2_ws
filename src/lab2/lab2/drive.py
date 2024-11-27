@@ -57,22 +57,23 @@ class AccumulateOdometry(Node):
         self.targets = []
 
         # Add target [X, Y, error radius]
-        # self.targets.append([-2, 2, 0.2])
+        # Avoid
+        # self.targets.append([2.2, 2.95, 0.2])
 
         # # First right
-        self.targets.append([2, 2.805, 0.1])
+        # self.targets.append([2, 2.805, 0.1])
 
         # # First left
-        # self.targets.append([-2, 2.805, 0.2])
+        # self.targets.append([-2, 2.805, 0.1])
 
         # Second right
-        # self.targets.append([1.15, 3.9, 0.1])
+        self.targets.append([1.15, 3.9, 0.15])
 
         # # Second left
-        # self.targets.append([-1.15, 3.9, 0.2])
+        # self.targets.append([-1.15, 3.9, 0.15])
 
         # # Middle
-        # self.targets.append([0, 3.2, 0.15])
+        # self.targets.append([0, 3.2, 0.1])
 
         # Target info
         self.target_x = self.targets[0][0]
@@ -277,41 +278,8 @@ class AccumulateOdometry(Node):
         x = msg.point.x
         y = msg.point.y
         error = np.sqrt((self.x - x) ** 2 + (self.y - y) ** 2)
-        if error > 2:
+        if error > 1.5:
             return
-
-        # if self.kalman_filter:
-        #     ##apply kalman filter on the localization data
-        #     if len(self.localization_list) == 0:
-        #         self.localization_list.append(np.asarray([x, y]))
-        #         x, y = x, y
-        #     else:
-        #         self.localization_list.append(np.asarray([x, y]))
-
-        #         if len(self.localization_list) < 7:
-        #             measurements = np.array(self.localization_list)
-        #         else:
-        #             measurements = np.array(self.localization_list[-7:])
-
-        #         transition_matrices = [[1, 1], [0, 1]]
-        #         # transition_matrices = np.identity(len(measurements))
-        #         observation_matrices = [[1, 0], [0, 1]]
-        #         kf = KalmanFilter(
-        #             transition_matrices=transition_matrices,
-        #             observation_matrices=observation_matrices,
-        #         )
-
-        #         kf = kf.em(measurements)
-        #         (_, _) = kf.filter(measurements)
-        #         (smoothed_state_means, smoothed_state_covariances) = kf.smooth(
-        #             measurements
-        #         )
-
-        #         x, y = smoothed_state_means[-1]
-
-        # if np.sqrt((x - self.x) ** 2 + (y - self.y) ** 2) < 1:
-        # self.x = 0.5 * x + 0.5 * self.x
-        # self.y = 0.5 * y + 0.5 * self.y
 
         self.kf.predict()
         self.kf.R = self.R_marker
