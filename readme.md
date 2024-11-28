@@ -2,7 +2,7 @@
 Tested on Ubunut 22.05 using ROS2 Humble
 ## Instalation
 ### RAE-ROS
-Requirese [RAE-ROS](https://github.com/luxonis/rae-ros) msgs package, which can be installed using the following commands:
+Requires [RAE-ROS](https://github.com/luxonis/rae-ros) msgs package, which can be installed using the following commands:
 ```
 mkdir git
 cd git
@@ -19,10 +19,6 @@ pip install ffmpeg
 sudo apt install libsndfile1-dev
 
 ```
-### robot_localization
-```
-sudo apt install ros-humble-robot-localization
-```
 ### LAB 2 Package
 Make sure you are in the lAb2_WS folder
 ```
@@ -32,7 +28,12 @@ source ./install/setup.bash
 
 ## Running:
 ```
-ros2 run lab2 lab2
+# Localization node
+ros2 run lab2 localize 
+# Obstacle detection node
+ros2 run lab2 obstacles 
+# Driving node
+ros2 run lab2 drive
 ```
 
  
