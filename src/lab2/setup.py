@@ -20,9 +20,7 @@ setup(
     entry_points={
         "console_scripts": [
             "localize = lab2.localize:main",
-            "color = lab2.color:main",
-            "rgbdepth = lab2.rgb_depth:main",
-            "depth = lab2.depth:main",
+            "obstacles = lab2.obstacles:main",
             "drive = lab2.drive:main",
         ],
     },

@@ -11,11 +11,9 @@ import cv2
 import threading
 from queue import Queue
 from filterpy.kalman import KalmanFilter
-from rclpy.qos import QoSProfile, ReliabilityPolicy
 import numpy as np
 from lab2.utils import UTILS
 from time import sleep
-from scipy.stats import mode
 
 
 class AccumulateOdometry(Node):
@@ -42,15 +40,15 @@ class AccumulateOdometry(Node):
 
         # Gain for driving
         self.angular_gain = 2.5
-        self.linear_gain = 1  # 1
+        self.linear_gain = 1.5  # 1
 
         # Max speeds
         self.max_angular = 2.0  # 2.0
-        self.max_speed = 0.1  # 0.1
+        self.max_speed = 0.2  # 0.1
 
         # Starting coordinates and heading (yaw)
         self.start_x = 0
-        self.start_y = 0
+        self.start_y = -3.2
         self.start_yaw = math.radians(0)
 
         # List of targets to drive via
@@ -58,19 +56,19 @@ class AccumulateOdometry(Node):
 
         # Add target [X, Y, error radius]
         # Avoid
-        self.targets.append([1.1, 3.2, 0.2])
+        # self.targets.append([1, 3.4, 0.2])
 
         # # Middle
         # self.targets.append([0, 3.2, 0.1])
 
         # Second right
-        # self.targets.append([1.15, 3.9, 0.15])
+        # self.targets.append([1.1, 3.9, 0.1])
 
         # # Second left
-        # self.targets.append([-1.15, 3.9, 0.1])
+        # self.targets.append([-1.1, 3.9, 0.1])
 
         # # First right
-        self.targets.append([2, 2.805, 0.15])
+        self.targets.append([2, 2.85, 0.1])
 
         # # First left
         # self.targets.append([-2, 2.805, 0.1])
@@ -155,10 +153,12 @@ class AccumulateOdometry(Node):
         self.path = Path()
         self.path.header.frame_id = "odom"
 
+        # Subscribe to object avoidance node
         self.subscription = self.create_subscription(
             Point, "/object", self.object_callback, 10
         )
 
+        # Set leds
         self.utils.set_leds("#FF00FF")
 
         self.get_logger().info("Accumulated Odometry Node Initialized")
@@ -236,29 +236,34 @@ class AccumulateOdometry(Node):
             self.move_publisher.publish(twist)
 
     def object_callback(self, msg):
+        # Get X centroid of object
         self.obj_x = msg.x
+        # Check if needs to avoid object
         if bool(msg.y) and self.obj_detected == 0 and self.detect_obstacles:
             self.obj_detected = self.obj_ticks
 
     def avoid_obstacle(self):
-        """Avoid the obstacle by moving forward and turning."""
-
+        # Avoid the obstacle by moving forward and turning.
         if not self.detect_obstacles:
             return
+
+        # Set leds to red
         self.utils.set_leds("#FF0000")
 
         twist = Twist()
         twist.linear.x = 0.1  # Move forward slowly
         twist.angular.z = 1.2  # Turn slightly
+
+        # Determine turn left or right based on x coordinate of object
         if self.obj_x < self.x_right:
             twist.angular.z = -1 * twist.angular.z
-        # print(twist.angular.z, self.left_detected, self.right_detected)
         if self.should_move:
             self.move_publisher.publish(twist)
         if self.obj_detected > 0:
             self.obj_detected -= 1
 
     def angle_difference(self, target_angle, current_angle):
+        # Computes shortets angle differnce between two targets
         diff = target_angle - current_angle
         while diff > math.pi:
             diff -= 2 * math.pi
@@ -267,28 +272,39 @@ class AccumulateOdometry(Node):
         return diff
 
     def normalize_angle(self, angle):
+        # Normalize between 0-360 degrees in radians
         return angle % (2 * math.pi)
 
     def distance(self, x1, y1, x2, y2):
         return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
 
     def marker_callback(self, msg):
+        # Update location based on new marker predicted location
         if not self.use_markers:
             return
         x = msg.point.x
         y = msg.point.y
+
+        # Don't use estimate if more then 1.5m from current (estimated) location
         error = np.sqrt((self.x - x) ** 2 + (self.y - y) ** 2)
         if error > 1.5:
             return
 
+        # Combine using EKF
         self.kf.predict()
         self.kf.R = self.R_marker
         self.kf.update([x, y])
         self.x = self.kf.x.flatten()[0]
         self.y = self.kf.x.flatten()[1]
 
+        # Update distance to target
+        delta_x = self.target_x - self.x
+        delta_y = self.target_y - self.y
+        distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
+        self.distance_to_target = distance_to_target
+
+        # Update the path for visualization in RVIZ2
         if self.publish_path:
-            # Update the path
             new_pose = PoseStamped()
             new_pose.header = msg.header
             new_pose.header.frame_id = "odom"
@@ -318,17 +334,15 @@ class AccumulateOdometry(Node):
     def odometry_callback(self, msg):
         # Extract pose from odometry message
         position = msg.pose.pose.position
-        rotation = msg.pose.pose.orientation
 
-        _, _, yaw = euler_from_quaternion(
-            [rotation.x, rotation.y, rotation.z, rotation.w]
-        )
+        # Correct position using yaw if we have two measurments
         if self.pos_init:
             self.correct_position(position.x, position.y)
         self.pos_init = True
         self.prev_x = position.x
         self.prev_y = position.y
 
+        # Update distance to target
         delta_x = self.target_x - self.x
         delta_y = self.target_y - self.y
         distance_to_target = math.sqrt(delta_x**2 + delta_y**2)
@@ -339,6 +353,7 @@ class AccumulateOdometry(Node):
                 f"Accumulated Position -> x: {self.x:.2f}, y: {self.y:.2f}, Heading: {math.degrees(self.yaw):.2f}, Target Heading: {math.degrees(self.target_angle):.2f}, Distance: {self.distance_to_target:.4f}, Uncertainty: {np.sqrt(np.diag(self.kf.P))}",
             )
 
+        # Update the path for visualization in RVIZ2
         if self.publish_path:
             # Update the path
             new_pose = PoseStamped()
@@ -352,6 +367,7 @@ class AccumulateOdometry(Node):
 
     def correct_position(self, x, y):
         length = np.sqrt((x - self.prev_x) ** 2 + (y - self.prev_y) ** 2)
+        # Combine using EKF
         self.kf.predict()
         self.kf.R = self.R_odom
         self.kf.update(

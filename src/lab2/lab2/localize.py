@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image, CompressedImage
-from geometry_msgs.msg import Twist, PointStamped
+from sensor_msgs.msg import CompressedImage
+from geometry_msgs.msg import PointStamped
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -17,21 +17,27 @@ from nav_msgs.msg import Path
 
 class LAB2(Node):
     def __init__(self):
-        self.find_markers = True
+        super().__init__("lab_2")
+
+        # Use check to see if location is in the field
         self.check_in_field = True
+        # Allowable difference between predicted distance to marker based on last estimated position
+        # And real measurment
         self.dist_error = np.inf
 
-        super().__init__("lab_2")
+        # For setting led and lcd
         self.utils = UTILS(self)
+
+        # For displaying images
         self.display_queue = Queue()
         self.display_thread = threading.Thread(target=self.display_frames, daemon=True)
         self.display_thread.start()
+
+        # Subscribe to RGB camera
         self.br = CvBridge()
         self.cameras = [
             "/rae/right/image_raw/compressed",
         ]
-
-        # /rae/right/image_raw
         self.frames = [None] * len(self.cameras)
         self.scale_factor = 2
 
@@ -39,6 +45,20 @@ class LAB2(Node):
             "./src/lab2/lab2/calibration_data_hd.npz",
         ]
 
+        for topic in self.cameras:
+            self.create_subscription(
+                CompressedImage,
+                topic,
+                lambda msg, topic_name=topic: self.image_callback(msg, topic_name),
+                qos_profile=QoSProfile(
+                    depth=1, reliability=ReliabilityPolicy.BEST_EFFORT
+                ),
+            )
+
+        # Dict of marker measurments
+        self.location_dict = location_dict
+
+        # Setup Aruco detectors with improved parameters
         arucoParams = cv2.aruco.DetectorParameters()
         arucoParams.adaptiveThreshWinSizeMin = 3
         arucoParams.adaptiveThreshWinSizeMax = 21
@@ -53,8 +73,6 @@ class LAB2(Node):
         arucoParams.cornerRefinementMinAccuracy = 0.001
         arucoParams.cornerRefinementMaxIterations = 100
 
-        self.location_dict = location_dict
-
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
         self.h11_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
 
@@ -66,22 +84,15 @@ class LAB2(Node):
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_7X7_100)
         self.seven_detector = cv2.aruco.ArucoDetector(aruco_dict, arucoParams)
 
-        for topic in self.cameras:
-            self.create_subscription(
-                CompressedImage,
-                topic,
-                lambda msg, topic_name=topic: self.image_callback(msg, topic_name),
-                qos_profile=QoSProfile(
-                    depth=1, reliability=ReliabilityPolicy.BEST_EFFORT
-                ),
-            )
-
+        # Localize based on timer
         self.timer = self.create_timer(
             timer_period_sec=0.1, callback=self.timer_callback
         )
 
+        # Publish estimated location
         self.publisher_ = self.create_publisher(PointStamped, "/marker_loc", 10)
 
+        # Get estimated location from driving node
         self.path_subscription = self.create_subscription(
             Path,
             "/accumulated_path",  # Replace with your Path topic
@@ -111,11 +122,11 @@ class LAB2(Node):
         self.x = latest_pose.position.x * 100
         self.y = latest_pose.position.y * 100
 
-        # # Log the coordinates
+        # Log the coordinates
         self.get_logger().info(f"Latest coordinates: x={self.x}, y={self.y}")
 
     def display_frames(self):
-        """Thread to handle displaying frames."""
+        # Thread to handle displaying frames
         while True:
             try:
                 frame_id, frame = self.display_queue.get()
@@ -127,11 +138,8 @@ class LAB2(Node):
                 self.get_logger().error(f"Error in display thread: {e}")
 
     def detect_makers(self, cam_id, current_frame):
+        # Create list of real-world marker X,Y location and distance to marker
         point_list = []
-
-        # Sharpen the image
-        # kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-        # current_frame = cv2.filter2D(current_frame, -1, kernel)
 
         (corners, ids, _) = self.h11_detector.detectMarkers(current_frame)
         if ids is not None:
@@ -147,13 +155,16 @@ class LAB2(Node):
         if ids is not None:
             point_list += self.filter_points(corners, ids, "h12", cam_id, current_frame)
 
+        # Visualize markers
         self.display_queue.put((cam_id, current_frame))
         return point_list
 
     def filter_points(self, corners, ids, tag_family, cam_id=0, current_frame=None):
+        # Loop over detected markers
         point_list = []
         if ids is not None:
             for c, id in zip(corners, ids):
+                # Only use marker if ID is known
                 if id[0] in self.location_dict[tag_family]:
                     pose = self.get_point_pose(
                         c,
@@ -171,6 +182,7 @@ class LAB2(Node):
         return point_list
 
     def get_point_pose(self, corner, id, tag_family, cam_id=0, current_frame=None):
+        # Get real-world X,Y and distance to it
         marker = self.get_marker_points(self.location_dict[tag_family][id][1])
         data = np.load(self.calibration_npzs[cam_id])
         camera_matrix = data["camera_matrix"]
@@ -369,13 +381,6 @@ class LAB2(Node):
             point_list += self.procces_frame(cam_id)
         # Triangulate
         self.locate(point_list)
-
-    # def stop(self, signum=None, frame=None):
-    #     self.utils.set_leds("#00FF00")
-    #     self.utils.draw_text(f"Shut down")
-    #     self.destroy_node()
-    #     rclpy.shutdown()
-    #     exit()
 
 
 def main(args=None):
